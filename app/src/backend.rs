@@ -26,6 +26,22 @@ pub fn run<T: Send + 'static>(
     async move { handle.await.expect("backend task panicked") }
 }
 
+/// Like [`run`], but abortable; resolves to `None` once aborted.
+pub fn run_abortable<T: Send + 'static>(
+    fut: impl Future<Output = T> + Send + 'static,
+) -> (tokio::task::AbortHandle, impl Future<Output = Option<T>>) {
+    let handle = RUNTIME.spawn(fut);
+    let abort = handle.abort_handle();
+    let result = async move {
+        match handle.await {
+            Ok(value) => Some(value),
+            Err(error) if error.is_cancelled() => None,
+            Err(error) => std::panic::resume_unwind(error.into_panic()),
+        }
+    };
+    (abort, result)
+}
+
 /// Fire-and-forget on the tokio runtime.
 pub fn spawn(fut: impl Future<Output = impl Send + 'static> + Send + 'static) {
     RUNTIME.spawn(fut);

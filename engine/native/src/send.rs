@@ -88,6 +88,9 @@ pub async fn start_share_items(
     let ticket_type = options.ticket_type;
 
     let setup = async move {
+        // Removes the half-built store if setup fails or is cancelled; the
+        // finished share owns its own guard.
+        let mut setup_guard = AutoCleanupDir::new(blobs_data_dir2.clone());
         let endpoint = builder.bind().await?;
         let store = storage::create_send_store(&blobs_data_dir2).await?;
 
@@ -104,7 +107,7 @@ pub async fn start_share_items(
         );
 
         let (temp_tag, size, _collection) =
-            crate::import::import_paths(canonical_paths, blobs.store()).await?;
+            crate::import::import_paths(canonical_paths, blobs.store(), &app_handle_clone).await?;
 
         run_share_session(
             endpoint,
@@ -121,17 +124,22 @@ pub async fn start_share_items(
             progress_rx,
         )
         .await
-        .map(|outcome| SendResult {
-            ticket: outcome.ticket,
-            hash: outcome.hash,
-            size: outcome.size,
-            entry_type: outcome.entry_type,
-            router: outcome.router.expect("ephemeral share router"),
-            temp_tag: outcome.temp_tag,
-            blobs_data_dir: AutoCleanupDir::new(outcome.cleanup_dir.expect("native cleanup dir")),
-            _progress_handle: outcome.progress_handle,
-            _store: outcome.store,
-            completed_peers: outcome.completed_peers,
+        .map(|outcome| {
+            setup_guard.disarm();
+            SendResult {
+                ticket: outcome.ticket,
+                hash: outcome.hash,
+                size: outcome.size,
+                entry_type: outcome.entry_type,
+                router: outcome.router.expect("ephemeral share router"),
+                temp_tag: outcome.temp_tag,
+                blobs_data_dir: AutoCleanupDir::new(
+                    outcome.cleanup_dir.expect("native cleanup dir"),
+                ),
+                _progress_handle: outcome.progress_handle,
+                _store: outcome.store,
+                completed_peers: outcome.completed_peers,
+            }
         })
     };
 

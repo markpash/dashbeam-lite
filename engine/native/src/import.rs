@@ -12,33 +12,87 @@ use iroh_blobs::{
 };
 use n0_future::BufferedStreamExt;
 use n0_future::StreamExt;
+use protocol::AppHandle;
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::Instant;
 use walkdir::WalkDir;
+
+/// Hashing progress across every file of one import, reported as
+/// `import-progress` with the usual `<bytes>:<total>:<speed>` payload.
+struct ImportProgress {
+    handle: AppHandle,
+    total: u64,
+    done: AtomicU64,
+    started: Instant,
+    last_emit_ms: AtomicU64,
+}
+
+impl ImportProgress {
+    const INTERVAL_MS: u64 = 100;
+
+    fn advance(&self, bytes: u64) {
+        let done = self.done.fetch_add(bytes, Ordering::Relaxed) + bytes;
+        let now = self.started.elapsed().as_millis() as u64;
+        let last = self.last_emit_ms.load(Ordering::Relaxed);
+        let due = now >= last + Self::INTERVAL_MS || done >= self.total;
+        if due
+            && self
+                .last_emit_ms
+                .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+        {
+            if let Some(handle) = &self.handle {
+                let payload = protocol::progress::format_progress_payload(done, self.total, 0.0);
+                let _ = handle.emit_event_with_payload("import-progress", &payload);
+            }
+        }
+    }
+}
 
 /// Import one or more filesystem paths into the blob store.
 pub async fn import_paths(
     paths: Vec<PathBuf>,
     db: &Store,
+    handle: &AppHandle,
 ) -> anyhow::Result<(TempTag, u64, Collection)> {
     let mut entries: Vec<(String, TempTag, u64)> = Vec::new();
     let mut name_seen: BTreeMap<String, usize> = BTreeMap::new();
 
-    for path in paths {
+    let mut imports = Vec::with_capacity(paths.len());
+    for path in &paths {
         let stem = path
             .file_name()
             .and_then(|s| s.to_str())
             .map(|s| s.to_string())
             .unwrap_or_else(|| "item".to_string());
-
-        let import = collect_path_files(&path, &stem)?;
+        let import = collect_path_files(path, &stem)?;
         if import.is_empty() {
             tracing::warn!("no valid files found in path {}, skipping", path.display());
         }
+        imports.push(import);
+    }
+    let total = imports
+        .iter()
+        .flatten()
+        .filter_map(|(_, file)| std::fs::metadata(file).ok())
+        .map(|m| m.len())
+        .sum();
+    let progress = Arc::new(ImportProgress {
+        handle: handle.clone(),
+        total,
+        done: AtomicU64::new(0),
+        started: Instant::now(),
+        last_emit_ms: AtomicU64::new(0),
+    });
 
+    for import in imports {
         let mut local = n0_future::stream::iter(import)
             .map(|(name, file_path)| {
                 let db = db.clone();
+                let progress = progress.clone();
                 async move {
                     let import = db.add_path_with_opts(AddPathOptions {
                         path: file_path,
@@ -47,6 +101,7 @@ pub async fn import_paths(
                     });
                     let mut stream = import.stream().await;
                     let mut item_size = 0u64;
+                    let mut hashed = 0u64;
                     let temp_tag = loop {
                         let item = stream
                             .next()
@@ -54,7 +109,14 @@ pub async fn import_paths(
                             .context("import stream ended without a tag")?;
                         match item {
                             AddProgressItem::Size(size) => item_size = size,
-                            AddProgressItem::Done(tt) => break tt,
+                            AddProgressItem::OutboardProgress(offset) => {
+                                progress.advance(offset.saturating_sub(hashed));
+                                hashed = hashed.max(offset);
+                            }
+                            AddProgressItem::Done(tt) => {
+                                progress.advance(item_size.saturating_sub(hashed));
+                                break tt;
+                            }
                             AddProgressItem::Error(cause) => {
                                 anyhow::bail!("error importing {}:{}", name, cause)
                             }

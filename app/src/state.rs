@@ -80,6 +80,15 @@ pub enum ShareStatus {
     Failed,
 }
 
+/// A share whose files are still being hashed into the blob store.
+pub struct Preparing {
+    tag: u64,
+    pub title: String,
+    pub progress: Progress,
+    started: std::time::Instant,
+    abort: tokio::task::AbortHandle,
+}
+
 pub struct Share {
     tag: u64,
     pub ticket: String,
@@ -159,7 +168,7 @@ pub struct Dash {
     pub nearby: Vec<NearbyDevice>,
     pub nearby_unavailable: Option<String>,
     pub share: Option<Share>,
-    pub share_starting: bool,
+    pub preparing: Option<Preparing>,
     pub receive: Receive,
     pub invites: Vec<Invite>,
     /// Trusted-device invites waiting for the current receive to finish.
@@ -207,7 +216,7 @@ impl Dash {
             nearby: Vec::new(),
             nearby_unavailable: None,
             share: None,
-            share_starting: false,
+            preparing: None,
             receive: Receive::Idle,
             invites: Vec::new(),
             queued: Vec::new(),
@@ -373,7 +382,7 @@ impl Dash {
 
     pub fn busy(&self) -> bool {
         self.share.is_some()
-            || self.share_starting
+            || self.preparing.is_some()
             || matches!(self.receive, Receive::Running { .. })
     }
 
@@ -381,17 +390,36 @@ impl Dash {
         if paths.is_empty() || self.busy() {
             return;
         }
-        self.share_starting = true;
         let tag = self.tag();
-        let task = backend::run(backend::share(
+        let names: Vec<String> = paths
+            .iter()
+            .filter_map(|p| p.file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+            .collect();
+        let (abort, task) = backend::run_abortable(backend::share(
             paths,
             self.network(),
             backend::handle(&self.events, tag),
         ));
+        self.preparing = Some(Preparing {
+            tag,
+            title: summarize(&names),
+            progress: Progress::default(),
+            started: std::time::Instant::now(),
+            abort,
+        });
+        cx.notify();
         cx.spawn(async move |this, cx| {
-            let result = task.await;
+            let Some(result) = task.await else { return };
             this.update(cx, |this, cx| {
-                this.share_starting = false;
+                if this.preparing.as_ref().is_none_or(|p| p.tag != tag) {
+                    // Cancelled just as it finished.
+                    if let Ok((result, _)) = result {
+                        backend::spawn(backend::stop_share(result));
+                    }
+                    return;
+                }
+                this.preparing = None;
                 match result {
                     Ok((result, meta)) => {
                         this.share = Some(Share {
@@ -411,8 +439,17 @@ impl Dash {
                 }
                 cx.notify();
             })
+            .ok();
         })
         .detach();
+    }
+
+    /// Stops a share that is still hashing its files.
+    pub fn cancel_preparing(&mut self, cx: &mut Context<Self>) {
+        if let Some(preparing) = self.preparing.take() {
+            preparing.abort.abort();
+            cx.notify();
+        }
     }
 
     pub fn stop_share(&mut self, cx: &mut Context<Self>) {
@@ -911,6 +948,19 @@ impl Dash {
     fn on_event(&mut self, event: Event, cx: &mut Context<Self>) {
         let payload = event.payload.as_deref();
         match event.name.as_str() {
+            "import-progress" => {
+                let progress = Progress::parse(payload);
+                match (self.preparing.as_mut(), progress) {
+                    (Some(p), Some(mut progress)) if p.tag == event.tag => {
+                        let secs = p.started.elapsed().as_secs_f64();
+                        if secs > 0.0 {
+                            progress.speed_bps = progress.bytes as f64 / secs;
+                        }
+                        p.progress = progress;
+                    }
+                    _ => return,
+                }
+            }
             "transfer-started"
             | "transfer-progress"
             | "transfer-completed"

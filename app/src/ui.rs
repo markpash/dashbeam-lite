@@ -507,6 +507,25 @@ impl Shell {
 
     fn send(&mut self, cx: &mut Context<Self>) -> Div {
         let dash = self.dash.read(cx);
+        if let Some(preparing) = &dash.preparing {
+            let mut card = card(cx)
+                .child(heading(preparing.title.clone()))
+                .child(muted("Preparing transfer…", cx));
+            if preparing.progress.total > 0 {
+                card = card.child(progress_line(&preparing.progress, cx));
+            }
+            card =
+                card.child(
+                    row().justify_end().child(
+                        Button::new("cancel-prepare")
+                            .label("Cancel")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.dash.update(cx, |d, cx| d.cancel_preparing(cx))
+                            })),
+                    ),
+                );
+            return v_flex().gap_4().child(card);
+        }
         let Some(share) = &dash.share else {
             let border = cx.theme().border;
             return v_flex().gap_4().child(heading("Send")).child(
@@ -524,7 +543,6 @@ impl Shell {
                         Button::new("choose")
                             .primary()
                             .label("Choose…")
-                            .loading(dash.share_starting)
                             .on_click(cx.listener(|this, _, _, cx| this.pick_files(cx))),
                     ),
             );
