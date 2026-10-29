@@ -49,6 +49,21 @@ impl Progress {
             (self.bytes as f64 / self.total as f64) as f32
         }
     }
+
+    /// Remaining time at the current speed, e.g. "2 min 30 sec left".
+    pub fn eta(&self) -> Option<String> {
+        let remaining = self.total.saturating_sub(self.bytes);
+        if self.speed_bps <= 0.0 || remaining == 0 {
+            return None;
+        }
+        let secs = (remaining as f64 / self.speed_bps) as u64;
+        let (h, m, s) = (secs / 3600, secs / 60 % 60, secs % 60);
+        Some(match (h, m) {
+            (0, 0) => format!("{s} sec left"),
+            (0, _) => format!("{m} min {s} sec left"),
+            _ => format!("{h} h {m} min left"),
+        })
+    }
 }
 
 pub enum NodeState {
@@ -761,6 +776,14 @@ impl Dash {
         self.with_node(
             cx,
             move |node| async move { node.trust_paired(&endpoint_id, trust) },
+            |this, _, cx| this.refresh_devices(cx),
+        );
+    }
+
+    pub fn rename_paired(&mut self, endpoint_id: String, name: String, cx: &mut Context<Self>) {
+        self.with_node(
+            cx,
+            move |node| async move { node.rename_paired(&endpoint_id, &name) },
             |this, _, cx| this.refresh_devices(cx),
         );
     }

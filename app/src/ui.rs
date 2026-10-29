@@ -6,7 +6,7 @@ use engine::{
     Discoverability, DiscoveryConfigArg, PairingStatus, RelayConfigArg, TransferDirection,
 };
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::popover::Popover;
 use gpui_kit::component::progress::Progress as ProgressBar;
 use gpui_kit::component::switch::Switch;
@@ -33,6 +33,8 @@ pub struct Shell {
     relay_mode: usize,
     relay_fallback: bool,
     discovery_custom: bool,
+    /// Paired device being renamed inline, with its name field.
+    renaming: Option<(String, Entity<InputState>, Subscription)>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -131,6 +133,7 @@ impl Shell {
             relay_fallback: relay.as_ref().and_then(|r| r.fallback.as_deref()) == Some("public"),
             discovery_custom: discovery.is_some_and(|d| d.mode == "custom"),
             dash,
+            renaming: None,
             _subscriptions: subscriptions,
         }
     }
@@ -169,6 +172,36 @@ impl Shell {
             }
         })
         .detach();
+    }
+
+    fn start_rename(
+        &mut self,
+        endpoint_id: String,
+        name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let input = cx.new(|cx| InputState::new(window, cx).default_value(name));
+        input.update(cx, |input, cx| input.focus(window, cx));
+        let enter = cx.subscribe_in(&input, window, |this, _, event: &InputEvent, _, cx| {
+            if let InputEvent::PressEnter { .. } = event {
+                this.finish_rename(true, cx);
+            }
+        });
+        self.renaming = Some((endpoint_id, input, enter));
+        cx.notify();
+    }
+
+    fn finish_rename(&mut self, save: bool, cx: &mut Context<Self>) {
+        let Some((endpoint_id, input, _)) = self.renaming.take() else {
+            return;
+        };
+        let name = input.read(cx).value().trim().to_string();
+        if save && !name.is_empty() {
+            self.dash
+                .update(cx, |d, cx| d.rename_paired(endpoint_id, name, cx));
+        }
+        cx.notify();
     }
 
     fn apply_network(&mut self, cx: &mut Context<Self>) {
@@ -300,10 +333,11 @@ fn progress_line(p: &Progress, cx: &App) -> Div {
         .child(ProgressBar::new("progress").value(p.fraction() * 100.0))
         .child(muted(
             format!(
-                "{} of {} · {}/s",
+                "{} of {} · {}/s{}",
                 format_size(p.bytes),
                 format_size(p.total),
-                format_size(p.speed_bps as u64)
+                format_size(p.speed_bps as u64),
+                p.eta().map(|eta| format!(" · {eta}")).unwrap_or_default()
             ),
             cx,
         ))
@@ -778,7 +812,36 @@ impl Shell {
                 PairingStatus::UnpairedRemotely => "Unpaired",
                 PairingStatus::StaleLocalIdentity => "Re-pair required",
             };
+            let editing = self
+                .renaming
+                .as_ref()
+                .filter(|(id, _, _)| id.eq_ignore_ascii_case(&device.endpoint_id))
+                .map(|(_, input, _)| input.clone());
+            if let Some(input) = editing {
+                paired = paired.child(
+                    row()
+                        .child(div().flex_1().child(Input::new(&input)))
+                        .child(
+                            Button::new(("cancel-rename", ix))
+                                .ghost()
+                                .label("Cancel")
+                                .on_click(
+                                    cx.listener(|this, _, _, cx| this.finish_rename(false, cx)),
+                                ),
+                        )
+                        .child(
+                            Button::new(("save-rename", ix))
+                                .primary()
+                                .label("Save")
+                                .on_click(
+                                    cx.listener(|this, _, _, cx| this.finish_rename(true, cx)),
+                                ),
+                        ),
+                );
+                continue;
+            }
             let (trust_id, forget_id) = (device.endpoint_id.clone(), device.endpoint_id.clone());
+            let (rename_id, name) = (device.endpoint_id.clone(), device.display_name.clone());
             paired = paired.child(
                 row()
                     .child(
@@ -794,6 +857,14 @@ impl Shell {
                             .on_click(cx.listener(move |this, checked: &bool, _, cx| {
                                 let (id, trust) = (trust_id.clone(), *checked);
                                 this.dash.update(cx, |d, cx| d.trust(id, trust, cx))
+                            })),
+                    )
+                    .child(
+                        Button::new(("rename", ix))
+                            .ghost()
+                            .label("Rename")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.start_rename(rename_id.clone(), name.clone(), window, cx)
                             })),
                     )
                     .child(
