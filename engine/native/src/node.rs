@@ -729,6 +729,27 @@ impl ProtocolHandler for ControlProtocol {
     }
 }
 
+/// Snapshot of the node endpoint's network conditions, for the UI.
+#[derive(Debug, Clone, Default)]
+pub struct Connectivity {
+    /// False until the first net report finishes.
+    pub report_ready: bool,
+    pub udp_v4: bool,
+    pub udp_v6: bool,
+    pub public_v4: Option<String>,
+    pub public_v6: Option<String>,
+    /// `Some(true)` behind a NAT that picks a new public port per destination,
+    /// which makes hole punching unreliable.
+    pub nat_varies: Option<bool>,
+    pub captive_portal: Option<bool>,
+    pub home_relay: Option<String>,
+    pub relay_connected: bool,
+    pub relay_error: Option<String>,
+    pub relay_latency_ms: Option<u64>,
+    /// LAN addresses peers on the same network can dial directly.
+    pub local_addrs: Vec<String>,
+}
+
 pub struct NodeService {
     pub(crate) runtime: Arc<Mutex<NodeRuntime>>,
     pub(crate) identity: Arc<DeviceIdentity>,
@@ -1009,6 +1030,76 @@ impl NodeService {
 
     pub fn is_network_ready(&self) -> bool {
         self.network_ready.load(Ordering::SeqCst)
+    }
+
+    /// What the node's endpoint currently knows about its network.
+    pub async fn connectivity(&self) -> Connectivity {
+        use iroh::Watcher as _;
+
+        let endpoint = self.runtime.lock().await.endpoint.clone();
+        let relay = endpoint.home_relay_status().get().into_iter().next();
+        let report = endpoint.net_report().get();
+        let home_relay = relay.as_ref().map(|r| r.url().clone());
+        let relay_latency_ms = report.as_ref().and_then(|report| {
+            report
+                .relay_latency
+                .iter()
+                .filter(|(_, url, _)| Some(*url) == home_relay.as_ref())
+                .map(|(_, _, latency)| latency.as_millis() as u64)
+                .min()
+        });
+        Connectivity {
+            report_ready: report.is_some(),
+            udp_v4: report.as_ref().is_some_and(|r| r.udp_v4),
+            udp_v6: report.as_ref().is_some_and(|r| r.udp_v6),
+            public_v4: report
+                .as_ref()
+                .and_then(|r| r.global_v4)
+                .map(|a| a.to_string()),
+            public_v6: report
+                .as_ref()
+                .and_then(|r| r.global_v6)
+                .map(|a| a.to_string()),
+            nat_varies: report.as_ref().and_then(|r| r.mapping_varies_by_dest()),
+            captive_portal: report.as_ref().and_then(|r| r.captive_portal),
+            home_relay: home_relay.map(|url| url.to_string()),
+            relay_connected: relay.as_ref().is_some_and(|r| r.is_connected()),
+            relay_error: relay
+                .as_ref()
+                .and_then(|r| r.last_error())
+                .map(|e| e.to_string()),
+            relay_latency_ms,
+            local_addrs: endpoint
+                .addr()
+                .ip_addrs()
+                .filter(|a| match a.ip() {
+                    std::net::IpAddr::V4(ip) => ip.is_private() || ip.is_link_local(),
+                    std::net::IpAddr::V6(ip) => ip.is_unique_local() || ip.is_unicast_link_local(),
+                })
+                .map(|a| a.to_string())
+                .collect(),
+        }
+    }
+
+    /// Looks this node up by its endpoint id through DNS, the way a remote
+    /// peer would find it. `origin` is a custom DNS origin, or n0's when `None`.
+    pub async fn lookup_self(&self, origin: Option<String>) -> anyhow::Result<()> {
+        use iroh::address_lookup::AddressLookup as _;
+        use n0_future::StreamExt as _;
+
+        let id = self.runtime.lock().await.endpoint.id();
+        let lookup = match origin {
+            Some(origin) => DnsAddressLookup::builder(origin),
+            None => DnsAddressLookup::n0_dns(),
+        }
+        .build();
+        let mut results = lookup.resolve(id).context("lookup is not supported")?;
+        match tokio::time::timeout(Duration::from_secs(10), results.next()).await {
+            Ok(Some(Ok(_))) => Ok(()),
+            Ok(Some(Err(error))) => Err(error.into()),
+            Ok(None) => anyhow::bail!("not found"),
+            Err(_) => anyhow::bail!("lookup timed out"),
+        }
     }
 
     pub fn device_info(&self) -> DeviceInfo {

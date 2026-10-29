@@ -24,7 +24,7 @@ pub use history::{
     TransferHistoryStore, TransferPathType, TransferPeer, TransferRecord, TransferStatus,
 };
 pub use nearby::{NearbyDevice, NearbyRegistry, ObserveOutcome};
-pub use node::NodeService;
+pub use node::{Connectivity, NodeService};
 pub use protocol::{
     apply_options, build_discovery_mode, fetch_metadata, get_or_create_secret, verify_discovery,
     AddrInfoOptions, AppHandle, DiscoveryConfigArg, DiscoveryModeOption, EventEmitter,

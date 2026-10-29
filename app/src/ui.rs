@@ -18,7 +18,15 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use std::path::PathBuf;
 
-const TABS: [&str; 5] = ["Send", "Receive", "Devices", "History", "Settings"];
+const TABS: [&str; 6] = [
+    "Send",
+    "Receive",
+    "Devices",
+    "Connectivity",
+    "History",
+    "Settings",
+];
+const CONNECTIVITY_TAB: usize = 3;
 
 pub struct Shell {
     dash: Entity<Dash>,
@@ -253,7 +261,8 @@ impl Render for Shell {
             0 => self.send(cx).into_any_element(),
             1 => self.receive(cx).into_any_element(),
             2 => self.devices(cx).into_any_element(),
-            3 => self.history(cx).into_any_element(),
+            CONNECTIVITY_TAB => self.connectivity(cx).into_any_element(),
+            4 => self.history(cx).into_any_element(),
             _ => self.settings(window, cx).into_any_element(),
         };
         v_flex()
@@ -273,6 +282,9 @@ impl Render for Shell {
                                 .selected_index(self.tab)
                                 .on_click(cx.listener(|this, ix: &usize, _, cx| {
                                     this.tab = *ix;
+                                    if *ix == CONNECTIVITY_TAB {
+                                        this.dash.update(cx, |d, cx| d.check_connectivity(cx));
+                                    }
                                     cx.notify();
                                 }))
                                 .children(TABS),
@@ -341,6 +353,37 @@ fn progress_line(p: &Progress, cx: &App) -> Div {
             ),
             cx,
         ))
+}
+
+#[derive(Clone, Copy)]
+enum Check {
+    Pass,
+    Warn,
+    Fail,
+    Pending,
+    Info,
+}
+
+fn check_row(check: Check, title: &str, detail: impl Into<SharedString>, cx: &App) -> Div {
+    let theme = cx.theme();
+    let (icon, color) = match check {
+        Check::Pass => (IconName::CircleCheck, theme.success),
+        Check::Warn => (IconName::TriangleAlert, theme.warning),
+        Check::Fail => (IconName::CircleX, theme.danger),
+        Check::Pending => (IconName::LoaderCircle, theme.muted_foreground),
+        Check::Info => (IconName::Info, theme.muted_foreground),
+    };
+    h_flex()
+        .gap_3()
+        .items_start()
+        .child(div().pt(px(2.)).child(Icon::new(icon).text_color(color)))
+        .child(
+            v_flex()
+                .flex_1()
+                .min_w_0()
+                .child(title.to_string())
+                .child(muted(detail, cx)),
+        )
 }
 
 fn device_label(name: Option<&str>, endpoint_id: &str) -> String {
@@ -938,6 +981,219 @@ impl Shell {
             .child(pairing)
             .child(paired)
             .child(nearby)
+    }
+
+    fn connectivity(&mut self, cx: &mut Context<Self>) -> Div {
+        let dash = self.dash.read(cx);
+        let checking = dash.connectivity_checking;
+        let page = v_flex().gap_4().child(
+            row()
+                .child(div().flex_1().child(heading("Connectivity")))
+                .child(
+                    Button::new("recheck-connectivity")
+                        .label("Check again")
+                        .loading(checking)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.dash.update(cx, |d, cx| d.check_connectivity(cx))
+                        })),
+                ),
+        );
+        let node = match &dash.node {
+            NodeState::Starting => Err("Device networking is starting…".to_string()),
+            NodeState::Failed(e) => Err(format!("Device networking failed: {e}")),
+            NodeState::Ready(_) => Ok(()),
+        };
+        if let Err(message) = node {
+            return page.child(card(cx).child(check_row(
+                Check::Fail,
+                "Device networking",
+                message,
+                cx,
+            )));
+        }
+        let Some(report) = &dash.connectivity else {
+            return page.child(card(cx).child(check_row(
+                Check::Pending,
+                "Checking your network",
+                "This takes a few seconds.",
+                cx,
+            )));
+        };
+        let net = &report.net;
+        let relays_off = dash
+            .settings
+            .relay
+            .as_ref()
+            .is_some_and(|r| r.mode == "disabled");
+        let udp = net.udp_v4 || net.udp_v6;
+
+        let (summary, summary_text) = if !net.report_ready {
+            (
+                Check::Pending,
+                "Still measuring your network. Check again in a moment.",
+            )
+        } else if udp && net.nat_varies == Some(false) {
+            (
+                Check::Pass,
+                "Good. Other devices can usually connect to this one directly.",
+            )
+        } else if net.relay_connected {
+            (
+                Check::Warn,
+                "Limited. Connections will often go through a relay, which is slower.",
+            )
+        } else {
+            (
+                Check::Fail,
+                "Not reachable from the internet. Only devices on your local network can connect.",
+            )
+        };
+
+        let mut list = card(cx);
+        if !net.report_ready {
+            list = list.child(check_row(Check::Pending, "Internet", "Measuring…", cx));
+        } else {
+            let udp_detail = match (net.udp_v4, net.udp_v6) {
+                (true, true) => "UDP works over IPv4 and IPv6.",
+                (true, false) => "UDP works over IPv4. No IPv6.",
+                (false, true) => "UDP works over IPv6 only.",
+                (false, false) => "UDP looks blocked, so transfers must go through a relay.",
+            };
+            list = list.child(check_row(
+                if udp { Check::Pass } else { Check::Fail },
+                "Direct internet (UDP)",
+                udp_detail,
+                cx,
+            ));
+            let public: Vec<&str> = [&net.public_v4, &net.public_v6]
+                .into_iter()
+                .flatten()
+                .map(String::as_str)
+                .collect();
+            list = list.child(if public.is_empty() {
+                check_row(Check::Warn, "Public address", "None found.", cx)
+            } else {
+                check_row(Check::Pass, "Public address", public.join("  "), cx)
+            });
+            list = list.child(match net.nat_varies {
+                Some(false) => check_row(
+                    Check::Pass,
+                    "NAT",
+                    "Your router keeps the same public port, so hole punching should work.",
+                    cx,
+                ),
+                Some(true) => check_row(
+                    Check::Warn,
+                    "NAT",
+                    "Your router picks a new public port per destination (hard NAT). Direct connections may fail and fall back to a relay.",
+                    cx,
+                ),
+                None => check_row(Check::Info, "NAT", "Couldn't determine the NAT type.", cx),
+            });
+            if net.captive_portal == Some(true) {
+                list = list.child(check_row(
+                    Check::Fail,
+                    "Captive portal",
+                    "Something (like a Wi-Fi login page) is intercepting web traffic. Sign in to the network first.",
+                    cx,
+                ));
+            }
+        }
+
+        list = list.child(if relays_off {
+            check_row(
+                Check::Info,
+                "Relay",
+                "Relays are turned off in Settings.",
+                cx,
+            )
+        } else if net.relay_connected {
+            let latency = net
+                .relay_latency_ms
+                .map(|ms| format!(" ({ms} ms)"))
+                .unwrap_or_default();
+            check_row(
+                Check::Pass,
+                "Relay",
+                format!(
+                    "Connected to {}{latency}",
+                    net.home_relay.as_deref().unwrap_or("a relay")
+                ),
+                cx,
+            )
+        } else {
+            let reason = net
+                .relay_error
+                .clone()
+                .unwrap_or_else(|| "Not connected yet.".into());
+            check_row(Check::Fail, "Relay", reason, cx)
+        });
+
+        let custom_discovery = dash
+            .settings
+            .discovery
+            .as_ref()
+            .is_some_and(|d| d.mode == "custom");
+        list = list.child(match &report.findable {
+            None => check_row(Check::Pending, "Findable by ID", "Looking this device up by its ID…", cx),
+            Some(Ok(())) => check_row(
+                Check::Pass,
+                "Findable by ID",
+                if custom_discovery {
+                    "Your discovery server is reachable, so paired devices can find this one."
+                } else {
+                    "Paired devices anywhere can look this device up by its ID."
+                },
+                cx,
+            ),
+            Some(Err(error)) => check_row(
+                Check::Warn,
+                "Findable by ID",
+                format!("Lookup failed: {error}. Paired devices may not find this one outside your network."),
+                cx,
+            ),
+        });
+
+        list = list.child(
+            match (&dash.nearby_unavailable, dash.settings.discoverability) {
+                (Some(reason), _) => check_row(
+                    Check::Fail,
+                    "Local network",
+                    format!("Nearby is unavailable: {reason}"),
+                    cx,
+                ),
+                (None, Discoverability::Off) => check_row(
+                    Check::Info,
+                    "Local network",
+                    "Hidden from Nearby (Settings).",
+                    cx,
+                ),
+                (None, Discoverability::PairedOnly) => check_row(
+                    Check::Pass,
+                    "Local network",
+                    "Visible on this network to paired devices.",
+                    cx,
+                ),
+                (None, Discoverability::Everyone) => check_row(
+                    Check::Pass,
+                    "Local network",
+                    "Visible on this network to everyone.",
+                    cx,
+                ),
+            },
+        );
+
+        if !net.local_addrs.is_empty() {
+            list = list.child(check_row(
+                Check::Info,
+                "Local addresses",
+                net.local_addrs.join("  "),
+                cx,
+            ));
+        }
+
+        page.child(card(cx).child(check_row(summary, "Overall", summary_text, cx)))
+            .child(list)
     }
 
     fn history(&mut self, cx: &mut Context<Self>) -> Div {

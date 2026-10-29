@@ -178,6 +178,16 @@ pub struct Dash {
     pub verifying: Option<(String, String)>,
     /// Which relay this device reaches; `None` while a check is running.
     pub relay: Option<RelayStatusResponse>,
+    pub connectivity: Option<ConnectivityReport>,
+    pub connectivity_checking: bool,
+}
+
+/// Result of the Connectivity tab's checks.
+pub struct ConnectivityReport {
+    pub net: engine::Connectivity,
+    /// Whether other devices can find this one by its id; `Err` says why not.
+    /// `None` while the (slower) lookup is still running.
+    pub findable: Option<Result<(), String>>,
 }
 
 impl gpui_kit::EventEmitter<Toast> for Dash {}
@@ -223,6 +233,8 @@ impl Dash {
             pairing_code: None,
             verifying: None,
             relay: None,
+            connectivity: None,
+            connectivity_checking: false,
         };
         this.start_node(cx);
         this.check_relay(cx);
@@ -879,6 +891,49 @@ impl Dash {
             })
         })
         .detach();
+    }
+
+    pub fn check_connectivity(&mut self, cx: &mut Context<Self>) {
+        let Some(node) = self.node() else { return };
+        if self.connectivity_checking {
+            return;
+        }
+        self.connectivity_checking = true;
+        let discovery = self.settings.discovery.clone();
+        let snapshot = backend::run({
+            let node = node.clone();
+            async move { node.connectivity().await }
+        });
+        let lookup = backend::run(async move {
+            match discovery.filter(|d| d.mode == "custom") {
+                Some(d) if d.dns_origin.is_none() => engine::verify_discovery(d).await.map(|_| ()),
+                Some(d) => node
+                    .lookup_self(d.dns_origin)
+                    .await
+                    .map_err(|e| e.to_string()),
+                None => node.lookup_self(None).await.map_err(|e| e.to_string()),
+            }
+        });
+        cx.spawn(async move |this, cx| {
+            let net = snapshot.await;
+            this.update(cx, |this, cx| {
+                this.connectivity = Some(ConnectivityReport {
+                    net,
+                    findable: None,
+                });
+                cx.notify();
+            })?;
+            let findable = lookup.await;
+            this.update(cx, |this, cx| {
+                if let Some(report) = this.connectivity.as_mut() {
+                    report.findable = Some(findable);
+                }
+                this.connectivity_checking = false;
+                cx.notify();
+            })
+        })
+        .detach();
+        cx.notify();
     }
 
     pub fn check_relay(&mut self, cx: &mut Context<Self>) {
