@@ -899,6 +899,7 @@ impl Dash {
             return;
         }
         self.connectivity_checking = true;
+        self.check_relay(cx);
         let discovery = self.settings.discovery.clone();
         let snapshot = backend::run({
             let node = node.clone();

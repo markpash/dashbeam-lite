@@ -7,26 +7,20 @@ use engine::{
 };
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::popover::Popover;
 use gpui_kit::component::progress::Progress as ProgressBar;
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::tab::TabBar;
 use gpui_kit::component::{
-    h_flex, v_flex, ActiveTheme, Disableable, Icon, IconName, Sizable, Theme, TitleBar, WindowExt,
+    h_flex, v_flex, ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable, Theme, TitleBar,
+    WindowExt,
 };
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use std::path::PathBuf;
 
-const TABS: [&str; 6] = [
-    "Send",
-    "Receive",
-    "Devices",
-    "Connectivity",
-    "History",
-    "Settings",
-];
-const CONNECTIVITY_TAB: usize = 3;
+const TABS: [&str; 5] = ["Send", "Receive", "Devices", "History", "Settings"];
+/// Not a tab: the screen behind the globe in the title bar.
+const CONNECTIVITY: usize = TABS.len();
 
 pub struct Shell {
     dash: Entity<Dash>,
@@ -261,8 +255,8 @@ impl Render for Shell {
             0 => self.send(cx).into_any_element(),
             1 => self.receive(cx).into_any_element(),
             2 => self.devices(cx).into_any_element(),
-            CONNECTIVITY_TAB => self.connectivity(cx).into_any_element(),
-            4 => self.history(cx).into_any_element(),
+            3 => self.history(cx).into_any_element(),
+            CONNECTIVITY => self.connectivity(cx).into_any_element(),
             _ => self.settings(window, cx).into_any_element(),
         };
         v_flex()
@@ -279,17 +273,19 @@ impl Render for Shell {
                         .child(
                             TabBar::new("tabs")
                                 .segmented()
-                                .selected_index(self.tab)
+                                .when(self.tab < TABS.len(), |tabs| tabs.selected_index(self.tab))
                                 .on_click(cx.listener(|this, ix: &usize, _, cx| {
                                     this.tab = *ix;
-                                    if *ix == CONNECTIVITY_TAB {
-                                        this.dash.update(cx, |d, cx| d.check_connectivity(cx));
-                                    }
                                     cx.notify();
                                 }))
                                 .children(TABS),
                         )
-                        .child(div().absolute().right_3().child(self.relay_status(cx))),
+                        .child(
+                            div()
+                                .absolute()
+                                .right_3()
+                                .child(self.connectivity_button(cx)),
+                        ),
                 ),
             )
             .child(self.banners(cx))
@@ -392,79 +388,28 @@ fn device_label(name: Option<&str>, endpoint_id: &str) -> String {
 }
 
 impl Shell {
-    /// Title-bar indicator for the relay this device reaches, with details in
-    /// a popover.
-    fn relay_status(&self, cx: &App) -> Popover {
+    /// Title-bar globe, tinted by the relay this device reaches. Opens the
+    /// Connectivity screen.
+    fn connectivity_button(&self, cx: &mut Context<Self>) -> Button {
         let theme = cx.theme();
-        let status = self.dash.read(cx).relay.clone();
-        let (heading, color) = match &status {
-            None => ("Checking relay…", theme.muted_foreground.opacity(0.5)),
-            Some(s) if s.connected && s.fell_back_to_public => ("Public relay", theme.warning),
-            Some(s) if s.connected && s.kind == "custom" => ("Custom relay", theme.blue),
-            Some(s) if s.connected => ("Public relay", theme.muted_foreground),
-            Some(s) if s.kind == "disabled" => {
-                ("Relays disabled", theme.muted_foreground.opacity(0.4))
-            }
-            Some(_) => ("Relay unavailable", theme.muted_foreground.opacity(0.4)),
+        let color = match &self.dash.read(cx).relay {
+            None => theme.muted_foreground.opacity(0.5),
+            Some(s) if s.connected && s.fell_back_to_public => theme.warning,
+            Some(s) if s.connected && s.kind == "custom" => theme.blue,
+            Some(s) if s.connected => theme.muted_foreground,
+            Some(_) => theme.muted_foreground.opacity(0.4),
         };
-        let fell_back = status
-            .as_ref()
-            .is_some_and(|s| s.connected && s.fell_back_to_public);
-        let disabled = status.as_ref().is_some_and(|s| s.kind == "disabled");
-        let url = status.and_then(|s| s.url).map(SharedString::from);
-        let dash = self.dash.clone();
-
-        Popover::new("relay-status")
-            .anchor(Anchor::TopRight)
-            .trigger(
-                Button::new("relay")
-                    .ghost()
-                    .small()
-                    .tooltip("Relay connection status")
-                    .icon(Icon::new(IconName::Globe).text_color(color)),
-            )
-            .content(move |_, _, cx| {
-                let muted = cx.theme().muted_foreground;
-                let note = if disabled {
-                    "Relays are off. Only direct connections are used, so transfers may \
-                     fail across strict firewalls or NATs."
-                } else {
-                    "Relays only help devices find each other and connect. Once a direct \
-                     connection is up, or on the same network, files go straight between \
-                     devices. Transfers are end-to-end encrypted, so relays never see \
-                     your files."
-                };
-                let dash = dash.clone();
-                v_flex()
-                    .w(px(280.))
-                    .gap_2()
-                    .text_sm()
-                    .child(div().font_weight(FontWeight::MEDIUM).child(heading))
-                    .when(fell_back, |el| {
-                        el.child(
-                            div()
-                                .text_xs()
-                                .text_color(cx.theme().warning)
-                                .child("Custom relay unreachable, using a public relay instead."),
-                        )
-                    })
-                    .children(
-                        url.clone()
-                            .map(|url| div().text_xs().text_color(muted).child(url)),
-                    )
-                    .child(div().text_xs().text_color(muted).child(note))
-                    .child(
-                        h_flex().justify_end().child(
-                            Button::new("recheck")
-                                .ghost()
-                                .small()
-                                .label("Check again")
-                                .on_click(move |_, _, cx| {
-                                    dash.update(cx, |d, cx| d.check_relay(cx))
-                                }),
-                        ),
-                    )
-            })
+        Button::new("connectivity")
+            .ghost()
+            .small()
+            .selected(self.tab == CONNECTIVITY)
+            .tooltip("Connectivity")
+            .icon(Icon::new(IconName::Globe).text_color(color))
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.tab = CONNECTIVITY;
+                this.dash.update(cx, |d, cx| d.check_connectivity(cx));
+                cx.notify();
+            }))
     }
 
     fn banners(&mut self, cx: &mut Context<Self>) -> Div {
@@ -1107,6 +1052,13 @@ impl Shell {
                 "Relays are turned off in Settings.",
                 cx,
             )
+        } else if dash.relay.as_ref().is_some_and(|r| r.fell_back_to_public) {
+            check_row(
+                Check::Warn,
+                "Relay",
+                "Your custom relay is unreachable, so this device is using a public relay.",
+                cx,
+            )
         } else if net.relay_connected {
             let latency = net
                 .relay_latency_ms
@@ -1194,6 +1146,12 @@ impl Shell {
 
         page.child(card(cx).child(check_row(summary, "Overall", summary_text, cx)))
             .child(list)
+            .child(muted(
+                "Relays only help devices find each other and connect. Once a direct \
+                 connection is up, or on the same network, files go straight between \
+                 devices. Transfers are end-to-end encrypted, so relays never see your files.",
+                cx,
+            ))
     }
 
     fn history(&mut self, cx: &mut Context<Self>) -> Div {
