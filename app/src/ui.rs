@@ -10,7 +10,7 @@ use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::progress::Progress as ProgressBar;
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::tab::TabBar;
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, TitleBar, WindowExt};
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Theme, TitleBar, WindowExt};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use std::path::PathBuf;
@@ -55,7 +55,12 @@ impl Shell {
         let relay = settings.relay.clone();
         let discovery = settings.discovery.clone();
 
+        // gpui-component starts in light mode; follow the system instead.
+        Theme::sync_system_appearance(Some(window), cx);
         let subscriptions = vec![
+            cx.observe_window_appearance(window, |_, window, cx| {
+                Theme::sync_system_appearance(Some(window), cx);
+            }),
             cx.observe_in(&dash, window, |this: &mut Self, dash, window, cx| {
                 // The node may come up after the window opened.
                 let name = dash
