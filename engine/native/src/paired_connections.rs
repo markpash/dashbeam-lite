@@ -19,8 +19,8 @@ use tokio::task::JoinHandle;
 use crate::device_identity::{DeviceIdentity, PairedDeviceStore};
 use crate::node::AccessState;
 use crate::pairing_util::{
-    build_control_connect_addr, emit_paired_invite_received,
-    emit_paired_invite_response, set_presence,
+    build_control_connect_addr, emit_paired_invite_received, emit_paired_invite_response,
+    set_presence,
 };
 use protocol::AppHandle;
 
@@ -51,7 +51,6 @@ impl PairedConnectionManager {
         presence: Arc<std::sync::RwLock<HashMap<String, bool>>>,
         app_handle: AppHandle,
     ) -> Self {
-
         Self {
             runtime: Arc::new(OnceCell::new()),
             identity,
@@ -67,12 +66,10 @@ impl PairedConnectionManager {
     }
 
     pub fn attach_runtime(&self, runtime: Arc<Mutex<crate::runtime::NodeRuntime>>) {
-
         let _ = self.runtime.set(runtime);
     }
 
     pub fn start(self: &Arc<Self>) -> JoinHandle<()> {
-
         let manager = Arc::clone(self);
         tokio::spawn(async move {
             manager.run_supervisor().await;
@@ -80,11 +77,9 @@ impl PairedConnectionManager {
     }
 
     pub async fn refresh(&self) {
-
         let devices = match self.paired_store.list() {
             Ok(devices) => devices,
             Err(_err) => {
-
                 return;
             }
         };
@@ -103,26 +98,21 @@ impl PairedConnectionManager {
             if active_ids.contains(endpoint_id) {
                 true
             } else {
-
                 handle.abort();
                 false
             }
         });
-        if tasks.len() != before {
-
-        }
+        if tasks.len() != before {}
 
         for device in active {
             let key = device.endpoint_id.to_lowercase();
             if tasks.contains_key(&key) {
-
                 continue;
             }
 
             let handle = self.spawn_connect_task(device);
             tasks.insert(key, handle);
         }
-
     }
 
     /// Resets a paired device's reconnect backoff and connects immediately —
@@ -177,7 +167,6 @@ impl PairedConnectionManager {
 
         if let Some(handle) = self.tasks.lock().await.remove(&key) {
             handle.abort();
-
         }
         self.remove_session(&key).await;
     }
@@ -204,8 +193,7 @@ impl PairedConnectionManager {
         timeout: Duration,
     ) -> Option<Connection> {
         let key = endpoint_id.to_lowercase();
-                if let Some(conn) = self.sessions.read().await.get(&key).cloned() {
-
+        if let Some(conn) = self.sessions.read().await.get(&key).cloned() {
             return Some(conn);
         }
 
@@ -229,15 +217,9 @@ impl PairedConnectionManager {
             }
         };
         match tokio::time::timeout(timeout, wait).await {
-            Ok(Some(conn)) => {
-
-                Some(conn)
-            }
+            Ok(Some(conn)) => Some(conn),
             Ok(None) => None,
-            Err(_) => {
-
-                None
-            }
+            Err(_) => None,
         }
     }
 
@@ -266,7 +248,6 @@ impl PairedConnectionManager {
     }
 
     async fn run_supervisor(self: Arc<Self>) {
-
         self.refresh().await;
         loop {
             if self.shutdown.load(Ordering::SeqCst) {
@@ -279,7 +260,6 @@ impl PairedConnectionManager {
 
             self.refresh().await;
         }
-
     }
 
     fn spawn_connect_task(&self, device: PairedDevice) -> JoinHandle<()> {
@@ -312,11 +292,13 @@ impl PairedConnectionManager {
         while !self.shutdown.load(Ordering::SeqCst) {
             attempt += 1;
             if !self.device_still_active(endpoint_id) {
-
                 break;
             }
 
-            match self.connect_and_recognize(endpoint_id, stored_relay, attempt).await {
+            match self
+                .connect_and_recognize(endpoint_id, stored_relay, attempt)
+                .await
+            {
                 Ok(conn) => {
                     backoff_secs = PAIRED_RECONNECT_MIN_SECS;
 
@@ -368,14 +350,12 @@ impl PairedConnectionManager {
             }
 
             if self.shutdown.load(Ordering::SeqCst) {
-
                 break;
             }
 
             tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
             backoff_secs = (backoff_secs * 2).min(PAIRED_RECONNECT_MAX_SECS);
         }
-
     }
 
     async fn connect_and_recognize(
@@ -406,13 +386,10 @@ impl PairedConnectionManager {
         .await
         .context("paired connect timeout")?
         .context("paired connect failed")?;
-        
+
         let keying = export_connection_keying_material(&conn).context("export keying")?;
 
-        let (mut send, _recv) = conn
-            .open_bi()
-            .await
-            .context("open bi for recognition")?;
+        let (mut send, _recv) = conn.open_bi().await.context("open bi for recognition")?;
         let recognition = ControlMessage::Recognition {
             signature: sign_challenge(&self.identity.secret_key, &keying),
         };
@@ -428,10 +405,9 @@ impl PairedConnectionManager {
     async fn read_outbound_control_loop(&self, conn: &Connection) -> bool {
         let remote = conn.remote_id();
         let remote_id = remote.to_string();
-                let keying = match export_connection_keying_material(conn) {
+        let keying = match export_connection_keying_material(conn) {
             Ok(keying) => keying,
             Err(_err) => {
-
                 return false;
             }
         };
@@ -439,7 +415,6 @@ impl PairedConnectionManager {
             let (_send, mut recv) = match conn.accept_bi().await {
                 Ok(streams) => streams,
                 Err(_err) => {
-
                     break;
                 }
             };
@@ -447,7 +422,6 @@ impl PairedConnectionManager {
             let msg = match read_message(&mut recv).await {
                 Ok(m) => m,
                 Err(_err) => {
-
                     continue;
                 }
             };
@@ -459,7 +433,6 @@ impl PairedConnectionManager {
                     total_size,
                     sender_name,
                 } => {
-
                     emit_paired_invite_received(
                         &self.app_handle,
                         &remote_id,
@@ -487,7 +460,6 @@ impl PairedConnectionManager {
                 }
                 ControlMessage::Recognition { signature } => {
                     if verify_challenge(&remote, &keying, &signature) {
-
                         let now = protocol::identity::unix_now_ms();
                         let _ = self.paired_store.touch(&remote_id, now);
                         set_presence(
@@ -495,7 +467,7 @@ impl PairedConnectionManager {
                             &self.app_handle,
                             &self.paired_store,
                             &remote_id,
-                            true
+                            true,
                         );
                     }
                 }
@@ -506,9 +478,7 @@ impl PairedConnectionManager {
                         return true;
                     }
                 }
-                _other => {
-
-                }
+                _other => {}
             }
         }
         false

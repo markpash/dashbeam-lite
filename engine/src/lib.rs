@@ -1,4 +1,4 @@
-//! # `engine` — stable public API for Tauri and integration tests
+//! # `engine` — stable public API for the app and integration tests
 //!
 //! ## Canonical imports
 //!
@@ -9,19 +9,11 @@
 //! };
 //! ```
 //!
-//! Desktop/mobile builds use the `native` platform crate (re-exported here).
-//! Browser transfer logic lives in `wasm-io` and is reached via the root-level
-//! `wasm-bridge` crate, not through this facade.
-//!
-//! Workspace layout: `protocol` (shared P2P logic) · `native` (disk I/O) · `wasm-io` (memory I/O).
+//! Workspace layout: `protocol` (shared P2P logic) · `native` (disk I/O, re-exported here).
 
-#[cfg(not(target_arch = "wasm32"))]
 pub use native::*;
 
-#[cfg(target_arch = "wasm32")]
-pub use wasm_io::*;
-
-pub use protocol::identity::unix_now_ms;
+pub use protocol::identity::{short_fingerprint, unix_now_ms};
 /// Shared protocol helpers not re-exported by the platform crates.
 pub use protocol::{
     allows_unpaired_control, build_relay_mode, download_to_store, get_relay_status,

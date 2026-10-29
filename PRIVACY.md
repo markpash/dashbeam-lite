@@ -23,7 +23,7 @@ DashBeam uses peer-to-peer (P2P) networking technology powered by [Iroh](https:/
 
 DashBeam stores the following data locally on your device:
 
-- **Secret Keys**: On desktop, your device's Iroh secret key is stored in the OS credential store (macOS Keychain, Windows Credential Manager, Linux Secret Service) under the `alt-sendme` service name. Public device metadata (display name, endpoint ID) is stored in the app data directory. During active transfers, temporary files are stored in your system's temp directory.
+- **Secret Keys**: Your device's Iroh secret key is stored in `identity.key` (readable only by your user account) in the app data directory (`~/Library/Application Support/com.dashbeam.desktop`), alongside public device metadata (display name, endpoint ID). During active transfers, temporary files are stored in your system's temp directory.
 - **Paired devices**: When you pair devices, DashBeam stores the remote device's endpoint ID and display name locally. Paired invites deliver the same one-time blob ticket as manual sharing; tickets are not reused across shares.
 - **Discoverability preference**: Whether this device advertises itself on the local network (Everyone / Paired only / Off), stored locally.
 - **App settings**: Preferences such as start-at-login, keep-running-in-background, and system notifications toggles remain on your device.
@@ -93,7 +93,7 @@ When a direct peer-to-peer connection is established (the preferred method), no 
 
 ### Local Network Discovery (mDNS)
 
-On desktop and Android, DashBeam can optionally discover other DashBeam devices on the same Wi-Fi or LAN using [multicast DNS (mDNS)](https://en.wikipedia.org/wiki/Multicast_DNS). This is separate from internet relays and Pkarr discovery.
+DashBeam can optionally discover other DashBeam devices on the same Wi-Fi or LAN using [multicast DNS (mDNS)](https://en.wikipedia.org/wiki/Multicast_DNS). This is separate from internet relays and Pkarr discovery.
 
 **What may be visible on your local network** (depending on **Settings → Network → Your discoverability**):
 

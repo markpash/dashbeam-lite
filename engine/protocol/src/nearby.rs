@@ -158,7 +158,10 @@ mod tests {
     #[test]
     fn background_presence_runs_while_discoverable_without_pairs() {
         assert!(should_run_background_presence(0, Discoverability::Everyone));
-        assert!(should_run_background_presence(0, Discoverability::PairedOnly));
+        assert!(should_run_background_presence(
+            0,
+            Discoverability::PairedOnly
+        ));
     }
 
     #[test]

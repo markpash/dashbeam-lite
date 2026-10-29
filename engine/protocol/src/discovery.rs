@@ -1,10 +1,9 @@
 use crate::types::{get_or_create_secret, DiscoveryModeOption};
 use serde::{Deserialize, Serialize};
 
-#[cfg(not(target_arch = "wasm32"))]
 use crate::time_compat::{timeout, Duration, Instant};
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscoveryConfigArg {
     pub mode: String,
     pub pkarr_relay_url: Option<String>,
@@ -17,7 +16,6 @@ pub struct DiscoveryConfigArg {
 const MAX_DISCOVERY_URL_LENGTH: usize = 2048;
 const MAX_DNS_ORIGIN_LENGTH: usize = 253;
 
-#[cfg(not(target_arch = "wasm32"))]
 const DISCOVERY_PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 
 fn has_disallowed_discovery_text_char(value: &str) -> bool {
@@ -65,9 +63,7 @@ pub fn parse_pkarr_relay_url(url: &str) -> Result<url::Url, String> {
     match parsed.scheme() {
         "https" => Ok(parsed),
         "http" if is_loopback_discovery_host(host) => Ok(parsed),
-        "http" => {
-            Err("Plain HTTP discovery URLs are only allowed for loopback hosts".to_string())
-        }
+        "http" => Err("Plain HTTP discovery URLs are only allowed for loopback hosts".to_string()),
         _ => Err("Discovery (pkarr) URL scheme must be https or loopback http".to_string()),
     }
 }
@@ -101,9 +97,7 @@ pub fn parse_dns_origin(origin: Option<&str>) -> Result<Option<String>, String> 
         return Err("DNS origin must not contain whitespace or control characters".to_string());
     }
     if raw.contains("://") || raw.contains('/') || raw.contains('@') || raw.contains(':') {
-        return Err(
-            "DNS origin must be a hostname (e.g. example.com), not a URL".to_string(),
-        );
+        return Err("DNS origin must be a hostname (e.g. example.com), not a URL".to_string());
     }
 
     let without_dot = raw.trim_end_matches('.');
@@ -116,26 +110,24 @@ pub fn parse_dns_origin(origin: Option<&str>) -> Result<Option<String>, String> 
         return Err("DNS origin must be a hostname (e.g. example.com)".to_string());
     }
 
-    if !without_dot
-        .split('.')
-        .all(is_valid_dns_origin_label)
-    {
+    if !without_dot.split('.').all(is_valid_dns_origin_label) {
         return Err("DNS origin contains an invalid hostname label".to_string());
     }
 
     Ok(Some(without_dot.to_ascii_lowercase()))
 }
 
-pub fn build_discovery_mode(arg: Option<DiscoveryConfigArg>) -> Result<DiscoveryModeOption, String> {
+pub fn build_discovery_mode(
+    arg: Option<DiscoveryConfigArg>,
+) -> Result<DiscoveryModeOption, String> {
     match arg {
         None => Ok(DiscoveryModeOption::Default),
         Some(arg) => match arg.mode.as_str() {
             "default" => Ok(DiscoveryModeOption::Default),
             "custom" => {
-                let url = arg
-                    .pkarr_relay_url
-                    .as_deref()
-                    .ok_or_else(|| "A pkarr relay URL is required for custom discovery".to_string())?;
+                let url = arg.pkarr_relay_url.as_deref().ok_or_else(|| {
+                    "A pkarr relay URL is required for custom discovery".to_string()
+                })?;
                 let pkarr_relay_url = parse_pkarr_relay_url(url)?;
                 let dns_origin = parse_dns_origin(arg.dns_origin.as_deref())?;
                 Ok(DiscoveryModeOption::Custom {
@@ -160,10 +152,7 @@ pub struct VerifyDiscoveryResponse {
 /// come online, mirroring [`crate::relay::verify_relays`].
 ///
 /// This probes HTTPS publish only; it does not validate NS delegation / port 53.
-#[cfg(not(target_arch = "wasm32"))]
-pub async fn verify_discovery(
-    arg: DiscoveryConfigArg,
-) -> Result<VerifyDiscoveryResponse, String> {
+pub async fn verify_discovery(arg: DiscoveryConfigArg) -> Result<VerifyDiscoveryResponse, String> {
     use iroh::address_lookup::pkarr::PkarrPublisher;
     use iroh::endpoint::{presets, RelayMode};
     use iroh::Endpoint;
@@ -180,16 +169,14 @@ pub async fn verify_discovery(
 
     // Custom discovery always needs OS trust for private-CA pkarr HTTPS.
     // DotTolerant wrapping also covers the default n0 relay probe path on Windows.
-    let endpoint = crate::tls_config::with_system_ca_if_custom(
-        Endpoint::builder(presets::Minimal),
-        true,
-    )
-    .secret_key(secret_key)
-    .relay_mode(RelayMode::Default)
-    .address_lookup(PkarrPublisher::builder(pkarr_relay_url.clone()))
-    .bind()
-    .await
-    .map_err(|e| format!("Failed to bind endpoint: {e}"))?;
+    let endpoint =
+        crate::tls_config::with_system_ca_if_custom(Endpoint::builder(presets::Minimal), true)
+            .secret_key(secret_key)
+            .relay_mode(RelayMode::Default)
+            .address_lookup(PkarrPublisher::builder(pkarr_relay_url.clone()))
+            .bind()
+            .await
+            .map_err(|e| format!("Failed to bind endpoint: {e}"))?;
 
     let started = Instant::now();
 

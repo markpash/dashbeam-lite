@@ -1,12 +1,8 @@
-//! Persistent Iroh node identity (`SecretKey`) for desktop and Android.
+//! Persistent Iroh node identity (`SecretKey`).
 //!
 //! Storage priority:
 //! 1. `IROH_SECRET` env var (explicit override; not written to disk)
-//! 2. `identity.key` in the app data directory (32 raw bytes; source of truth)
-//! 3. OS keychain entry (legacy desktop; migrated into `identity.key` on first load;
-//!    skipped on Android where keyring has no real credential store)
-//!
-//! On conflict between file and keychain, the file wins and keychain is re-synced.
+//! 2. `identity.key` in the app data directory (32 raw bytes)
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -15,8 +11,6 @@ use anyhow::{Context, Result};
 use data_encoding::HEXLOWER;
 use iroh::SecretKey;
 
-use crate::secret_store;
-
 pub const IDENTITY_KEY_FILE: &str = "identity.key";
 const SECRET_LEN: usize = 32;
 
@@ -24,7 +18,6 @@ const SECRET_LEN: usize = 32;
 pub enum SecretSource {
     EnvVar,
     IdentityFile,
-    KeychainMigrated,
     Generated,
 }
 
@@ -51,57 +44,18 @@ pub fn load_or_create_secret(data_dir: &Path) -> Result<SecretLoadOutcome> {
     }
 
     let file_path = identity_key_path(data_dir);
-    let file_secret = read_identity_file(&file_path)?;
-    let keychain_secret = read_keychain_secret()?;
-
-    match (file_secret, keychain_secret) {
-        (Some(file), Some(keychain)) if secrets_equal(&file, &keychain) => {
-
-            Ok(SecretLoadOutcome {
-                secret: file,
-                source: SecretSource::IdentityFile,
-            })
-        }
-        (Some(file), Some(_keychain)) => {
-
-            sync_keychain_best_effort(&file);
-            Ok(SecretLoadOutcome {
-                secret: file,
-                source: SecretSource::IdentityFile,
-            })
-        }
-        (Some(file), None) => {
-            sync_keychain_best_effort(&file);
-
-            Ok(SecretLoadOutcome {
-                secret: file,
-                source: SecretSource::IdentityFile,
-            })
-        }
-        (None, Some(keychain)) => {
-            write_identity_file(&file_path, &keychain)?;
-            sync_keychain_best_effort(&keychain);
-
-            Ok(SecretLoadOutcome {
-                secret: keychain,
-                source: SecretSource::KeychainMigrated,
-            })
-        }
-        (None, None) => {
-            let secret = SecretKey::generate();
-            write_identity_file(&file_path, &secret)?;
-            sync_keychain_best_effort(&secret);
-
-            Ok(SecretLoadOutcome {
-                secret,
-                source: SecretSource::Generated,
-            })
-        }
+    if let Some(secret) = read_identity_file(&file_path)? {
+        return Ok(SecretLoadOutcome {
+            secret,
+            source: SecretSource::IdentityFile,
+        });
     }
-}
-
-fn secrets_equal(a: &SecretKey, b: &SecretKey) -> bool {
-    a.to_bytes() == b.to_bytes()
+    let secret = SecretKey::generate();
+    write_identity_file(&file_path, &secret)?;
+    Ok(SecretLoadOutcome {
+        secret,
+        source: SecretSource::Generated,
+    })
 }
 
 fn read_identity_file(path: &Path) -> Result<Option<SecretKey>> {
@@ -111,10 +65,7 @@ fn read_identity_file(path: &Path) -> Result<Option<SecretKey>> {
     let bytes = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
     match parse_secret_bytes(&bytes) {
         Ok(secret) => Ok(Some(secret)),
-        Err(_err) => {
-
-            Ok(None)
-        }
+        Err(_err) => Ok(None),
     }
 }
 
@@ -141,34 +92,6 @@ fn restrict_permissions(_path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn read_keychain_secret() -> Result<Option<SecretKey>> {
-    let Some(hex) = secret_store::load_secret_hex()? else {
-        return Ok(None);
-    };
-    match parse_secret_hex(&hex) {
-        Ok(secret) => Ok(Some(secret)),
-        Err(_err) => {
-
-            Ok(None)
-        }
-    }
-}
-
-fn sync_keychain_best_effort(secret: &SecretKey) {
-    let hex = HEXLOWER.encode(&secret.to_bytes());
-    match secret_store::save_secret_hex(&hex) {
-        Ok(()) => {
-            match secret_store::load_secret_hex() {
-                Ok(Some(stored)) if stored == hex => {}
-                Ok(Some(_)) => {},
-                Ok(None) => {},
-                Err(_err) => {}
-            }
-        }
-        Err(_err) => {}
-    }
-}
-
 fn parse_secret_bytes(bytes: &[u8]) -> Result<SecretKey> {
     anyhow::ensure!(
         bytes.len() == SECRET_LEN,
@@ -191,16 +114,7 @@ fn parse_secret_hex(hex: &str) -> Result<SecretKey> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, MutexGuard};
     use tempfile::TempDir;
-
-    static KEYCHAIN_TEST_LOCK: Mutex<()> = Mutex::new(());
-
-    fn lock_keychain_tests() -> MutexGuard<'static, ()> {
-        KEYCHAIN_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
 
     #[test]
     fn identity_file_roundtrip() {
@@ -208,10 +122,8 @@ mod tests {
         let secret = SecretKey::generate();
         let path = identity_key_path(dir.path());
         write_identity_file(&path, &secret).expect("write");
-        let loaded = read_identity_file(&path)
-            .expect("read")
-            .expect("some");
-        assert!(secrets_equal(&secret, &loaded));
+        let loaded = read_identity_file(&path).expect("read").expect("some");
+        assert_eq!(secret.to_bytes(), loaded.to_bytes());
     }
 
     #[test]
@@ -221,48 +133,6 @@ mod tests {
         assert_eq!(first.source, SecretSource::Generated);
         let second = load_or_create_secret(dir.path()).expect("second load");
         assert_eq!(second.source, SecretSource::IdentityFile);
-        assert!(secrets_equal(&first.secret, &second.secret));
-    }
-
-    #[test]
-    fn file_wins_over_different_keychain() {
-        let _guard = lock_keychain_tests();
-        let _ = secret_store::delete_secret();
-        let dir = TempDir::new().expect("tempdir");
-        let file_secret = SecretKey::generate();
-        write_identity_file(&identity_key_path(dir.path()), &file_secret).expect("write file");
-
-        let keychain_secret = SecretKey::generate();
-        let hex = HEXLOWER.encode(&keychain_secret.to_bytes());
-        secret_store::save_secret_hex(&hex).expect("write keychain");
-
-        let loaded = load_or_create_secret(dir.path()).expect("load");
-        assert_eq!(loaded.source, SecretSource::IdentityFile);
-        assert!(secrets_equal(&file_secret, &loaded.secret));
-
-        let _ = secret_store::delete_secret();
-    }
-
-    #[test]
-    fn keychain_migrates_when_file_missing() {
-        let _guard = lock_keychain_tests();
-        let _ = secret_store::delete_secret();
-        let keychain_secret = SecretKey::generate();
-        let hex = HEXLOWER.encode(&keychain_secret.to_bytes());
-        secret_store::save_secret_hex(&hex).expect("write keychain");
-        let roundtrip = secret_store::load_secret_hex().expect("read keychain");
-        if roundtrip.as_deref() != Some(hex.as_str()) {
-            eprintln!("skipping keychain_migrates_when_file_missing: OS keychain roundtrip unavailable");
-            let _ = secret_store::delete_secret();
-            return;
-        }
-
-        let dir = TempDir::new().expect("tempdir");
-        let loaded = load_or_create_secret(dir.path()).expect("load");
-        assert_eq!(loaded.source, SecretSource::KeychainMigrated);
-        assert!(secrets_equal(&keychain_secret, &loaded.secret));
-        assert!(identity_key_path(dir.path()).exists());
-
-        let _ = secret_store::delete_secret();
+        assert_eq!(first.secret.to_bytes(), second.secret.to_bytes());
     }
 }

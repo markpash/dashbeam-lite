@@ -131,10 +131,7 @@ impl PairingTicket {
     pub fn encode(&self) -> anyhow::Result<String> {
         let relay_hint = pairing_ticket_relay_hint(self.relay_url.clone());
         if relay_hint.is_none() {
-            anyhow::ensure!(
-                is_endpoint_id_hex(&self.endpoint_id),
-                "invalid endpoint id"
-            );
+            anyhow::ensure!(is_endpoint_id_hex(&self.endpoint_id), "invalid endpoint id");
             return Ok(self.endpoint_id.clone());
         }
         let ticket = Self {
@@ -201,7 +198,10 @@ pub async fn read_message(
     let mut len_buf = [0u8; 4];
     recv.read_exact(&mut len_buf).await?;
     let len = u32::from_be_bytes(len_buf) as usize;
-    anyhow::ensure!(len > 0 && len <= 1024 * 1024, "invalid control message length");
+    anyhow::ensure!(
+        len > 0 && len <= 1024 * 1024,
+        "invalid control message length"
+    );
     let mut body = vec![0u8; len];
     recv.read_exact(&mut body).await?;
     let message: ControlMessage = serde_json::from_slice(&body)?;

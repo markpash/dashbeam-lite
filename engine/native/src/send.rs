@@ -1,13 +1,13 @@
 use std::path::PathBuf;
 
-use protocol::{
-    run_share_session, AppHandle, DiscoveryModeOption, FileMetadata, SendOptions, METADATA_ALPN,
-};
 use iroh::endpoint::presets;
 use iroh::{address_lookup::pkarr::PkarrPublisher, endpoint::RelayMode, Endpoint};
 use iroh_blobs::{
     provider::events::{ConnectMode, EventMask, EventSender, RequestMode},
     BlobsProtocol,
+};
+use protocol::{
+    run_share_session, AppHandle, DiscoveryModeOption, FileMetadata, SendOptions, METADATA_ALPN,
 };
 use tokio::sync::mpsc;
 
@@ -32,8 +32,8 @@ pub async fn start_share_items(
     app_handle: &AppHandle,
     metadata: Option<FileMetadata>,
 ) -> anyhow::Result<SendResult> {
-    use protocol::{get_or_create_secret, AddrInfoOptions};
     use anyhow::ensure;
+    use protocol::{get_or_create_secret, AddrInfoOptions};
 
     ensure!(!paths.is_empty(), "no paths provided for sharing");
 
@@ -45,8 +45,7 @@ pub async fn start_share_items(
         DiscoveryModeOption::Custom { .. } => Endpoint::builder(presets::Minimal),
         DiscoveryModeOption::Default => Endpoint::builder(presets::N0),
     };
-    let custom_infra =
-        protocol::uses_custom_infra(&options.discovery_mode, &options.relay_mode);
+    let custom_infra = protocol::uses_custom_infra(&options.discovery_mode, &options.relay_mode);
     let mut builder = protocol::with_system_ca_if_custom(builder, custom_infra)
         .alpns(vec![iroh_blobs::ALPN.to_vec(), METADATA_ALPN.to_vec()])
         .secret_key(secret_key)
@@ -55,7 +54,9 @@ pub async fn start_share_items(
     match &options.discovery_mode {
         // Self-hosted discovery: publish our home relay to the custom pkarr relay so
         // peers can resolve us by endpoint id without touching n0's servers.
-        DiscoveryModeOption::Custom { pkarr_relay_url, .. } => {
+        DiscoveryModeOption::Custom {
+            pkarr_relay_url, ..
+        } => {
             builder = builder.address_lookup(PkarrPublisher::builder(pkarr_relay_url.clone()));
         }
         DiscoveryModeOption::Default => {

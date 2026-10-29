@@ -1,19 +1,12 @@
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-#[cfg(not(target_arch = "wasm32"))]
 pub trait EventEmitter: Send + Sync {
     fn emit_event(&self, event_name: &str) -> Result<(), String>;
     fn emit_event_with_payload(&self, event_name: &str, payload: &str) -> Result<(), String>;
 }
 
-#[cfg(target_arch = "wasm32")]
-pub trait EventEmitter {
-    fn emit_event(&self, event_name: &str) -> Result<(), String>;
-    fn emit_event_with_payload(&self, event_name: &str, payload: &str) -> Result<(), String>;
-}
-
-/// Optional callback surface for transfer progress (Tauri events or JS callbacks).
+/// Optional callback surface for transfer progress (forwarded to the app as UI events).
 pub type AppHandle = Option<Arc<dyn EventEmitter>>;
 
 #[derive(Debug, Default)]
@@ -174,51 +167,12 @@ pub fn apply_options(addr: &mut iroh::EndpointAddr, opts: AddrInfoOptions) {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 use anyhow::Context;
-#[cfg(not(target_arch = "wasm32"))]
 use std::str::FromStr;
 
-#[cfg(target_arch = "wasm32")]
-mod wasm_secret {
-    use std::sync::{Mutex, OnceLock};
-
-    static SECRET: OnceLock<Mutex<Option<iroh::SecretKey>>> = OnceLock::new();
-
-    pub fn get_or_create() -> anyhow::Result<iroh::SecretKey> {
-        let slot = SECRET.get_or_init(|| Mutex::new(None));
-        let mut guard = slot.lock().expect("wasm secret mutex poisoned");
-        if let Some(key) = guard.as_ref() {
-            return Ok(key.clone());
-        }
-        let key = iroh::SecretKey::generate();
-        *guard = Some(key.clone());
-        Ok(key)
-    }
-
-    pub fn set(key: iroh::SecretKey) {
-        let slot = SECRET.get_or_init(|| Mutex::new(None));
-        *slot.lock().expect("wasm secret mutex poisoned") = Some(key);
-    }
-}
-
 pub fn get_or_create_secret() -> anyhow::Result<iroh::SecretKey> {
-    #[cfg(target_arch = "wasm32")]
-    {
-        return wasm_secret::get_or_create();
+    match std::env::var("IROH_SECRET") {
+        Ok(secret) => iroh::SecretKey::from_str(&secret).context("invalid secret"),
+        Err(_) => Ok(iroh::SecretKey::generate()),
     }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        match std::env::var("IROH_SECRET") {
-            Ok(secret) => iroh::SecretKey::from_str(&secret).context("invalid secret"),
-            Err(_) => Ok(iroh::SecretKey::generate()),
-        }
-    }
-}
-
-/// Persist the node secret key for browser sessions (survives page reload when set from JS).
-#[cfg(target_arch = "wasm32")]
-pub fn set_wasm_secret_key(key: iroh::SecretKey) {
-    wasm_secret::set(key);
 }

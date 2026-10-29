@@ -44,7 +44,6 @@ impl NodeService {
                 access.write().await.pairing_host_open = false;
 
                 if let Some(handle) = &app_handle {
-
                     let _ = handle.emit_event("pairing-host-expired");
                 }
             });
@@ -59,7 +58,6 @@ impl NodeService {
     pub async fn stop_pairing_host(&self) {
         if let Some(handle) = self.pairing_expire_task.lock().await.take() {
             handle.abort();
-
         }
         self.pairing_host_persistent.store(false, Ordering::SeqCst);
         let was_open = self.pairing_host_open.swap(false, Ordering::SeqCst);
@@ -87,7 +85,6 @@ impl NodeService {
         if let Some(relay) = host_relay_url.as_deref() {
             if let Ok(url) = relay.parse() {
                 addr.addrs.insert(TransportAddr::Relay(url));
-
             }
         }
 
@@ -129,7 +126,6 @@ impl NodeService {
         let host_info = match read_message(&mut recv).await {
             Ok(msg) => msg,
             Err(err) => {
-
                 return Err(err).context("read host PairingInfo");
             }
         };
@@ -142,7 +138,6 @@ impl NodeService {
             signature,
         } = host_info
         else {
-
             anyhow::bail!("expected host PairingInfo");
         };
         let peer_id = EndpointId::from_str(&endpoint_id).context("invalid host endpoint id")?;

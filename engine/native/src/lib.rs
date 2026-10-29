@@ -12,16 +12,10 @@ pub mod pairing_util;
 mod rate_limit;
 pub mod receive;
 pub mod runtime;
-pub mod secret_store;
 pub mod send;
 pub mod storage;
 pub mod types;
 
-pub use protocol::{
-    apply_options, build_discovery_mode, fetch_metadata, get_or_create_secret, verify_discovery,
-    AddrInfoOptions, AppHandle, DiscoveryConfigArg, DiscoveryModeOption, EventEmitter, FileMetadata,
-    FilePreviewItem, ReceiveOptions, RelayModeOption, SendOptions, VerifyDiscoveryResponse,
-};
 pub use device_identity::{
     load_or_create_identity, DeviceIdentity, DeviceInfo, PairedDeviceInfo, PairedDeviceStore,
 };
@@ -31,6 +25,12 @@ pub use history::{
 };
 pub use nearby::{NearbyDevice, NearbyRegistry, ObserveOutcome};
 pub use node::NodeService;
+pub use protocol::{
+    apply_options, build_discovery_mode, fetch_metadata, get_or_create_secret, verify_discovery,
+    AddrInfoOptions, AppHandle, DiscoveryConfigArg, DiscoveryModeOption, EventEmitter,
+    FileMetadata, FilePreviewItem, ReceiveOptions, RelayModeOption, SendOptions,
+    VerifyDiscoveryResponse,
+};
 pub use receive::download;
 pub use send::{start_share, start_share_items};
 pub use types::{ReceiveResult, SendResult};

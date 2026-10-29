@@ -1,5 +1,3 @@
-**Language:** English | [中文](docs/readme/README.zh-CN.md) | [Русский](docs/readme/README.ru.md) | [Português](docs/readme/README.pt-BR.md) | [Español](docs/readme/README.es.md) | [Deutsch](docs/readme/README.de.md) | [Français](docs/readme/README.fr.md) | [日本語](docs/readme/README.ja.md) | [한국어](docs/readme/README.ko.md) | [Polski](docs/readme/README.pl.md) | [العربية](docs/readme/README.ar.md)
-
 <div align="center">
 
 # File transfer doesn't need to be complicated
@@ -45,7 +43,7 @@ Why rely on WeTransfer, Dropbox, or Google Drive when you can reliably and easil
 
 ## Features
 
-- **Cross-platform** - Desktop, Android, CLI, and browser - no install on the web
+- **Native macOS app** - Built with [GPUI](https://www.gpui.rs) via gpui-kit; no web view, no Electron
 - **Any file, any size** - Files or folders, BLAKE3-verified
 - **Multi-gigabit speeds** - Saturates fast connections
 - **Nearby** - LAN auto-discovery; Pair & Send
@@ -54,13 +52,12 @@ Why rely on WeTransfer, Dropbox, or Google Drive when you can reliably and easil
 - **Resumable & multi-peer** - Resume interrupted transfers; share to many at once
 - **Dial by key** - Connect by device identity, not IP address
 - **Roaming** - Switch Wi-Fi, cellular, or networks mid-transfer without dropping
-- **Code, Link or QR** - Receiver needs no install (browser or app)
-- **Preview & history** - See before download; local transfer log
-- **Advanced debug mode** - Opt-in diagnostics for under the hood transparency
+- **Tickets** - Copy a ticket, paste it on the other side
+- **History** - Local transfer log
 - **Private** - No accounts, tracking, or ads; direct device-to-device
 - **Encrypted** - TLS 1.3 end-to-end; authenticated tickets
-- **Self-host relays** - Unthrottled remote transfers via your own relay (Settings → Infra)
-- **Always reachable** - Background tray/service, notifications, start at login
+- **Self-host relays** - Unthrottled remote transfers via your own relay (Settings → Relay servers)
+- **Always reachable** - Menu bar icon, notifications, start at login
 - **Lightweight & free** - Small installs; open source, no limits
 
 
@@ -81,82 +78,32 @@ Why rely on WeTransfer, Dropbox, or Google Drive when you can reliably and easil
 
 ## Installation
 
-The easiest way to get started is by downloading one of the following versions for your respective operating system:
+This fork is macOS-only (13+) and is built from source with a stable Rust toolchain:
 
-<table>
-  <tr>
-    <td><b>Platform</b></td>
-    <td><b>Recommended</b></td>
-    <td><b>Other formats</b></td>
-    <td><b>Size</b></td>
-  </tr>
-  <tr>
-    <td>💻 <b>Windows (x64)</b></td>
-    <td><a href='https://github.com/tonyantony300/dashbeam/releases/download/v0.7.2/DashBeam_0.7.2_x64-setup.exe'>Setup.exe</a></td>
-    <td><a href='https://github.com/tonyantony300/dashbeam/releases/download/v0.7.2/DashBeam_0.7.2_x64_en-US.msi'>MSI</a>, <a href='https://github.com/tonyantony300/dashbeam/releases/download/v0.7.2/DashBeam_0.7.2_x64-portable.zip'>Portable ZIP</a></td>
-    <td>~10 MB</td>
-  </tr>
-  <tr>
-    <td>💻 <b>macOS (Universal)</b></td>
-    <td><a href='https://github.com/tonyantony300/dashbeam/releases/download/v0.7.2/DashBeam_0.7.2_universal.dmg'>DashBeam.dmg</a></td>
-    <td><a href='https://github.com/tonyantony300/dashbeam/releases/download/v0.7.2/DashBeam_0.7.2_aarch64.dmg'>Apple Silicon</a>, <a href='https://github.com/tonyantony300/dashbeam/releases/download/v0.7.2/DashBeam_0.7.2_x64.dmg'>Intel</a></td>
-    <td>~15 MB</td>
-  </tr>
-  <tr>
-    <td>💻 <b>Linux (amd64)</b></td>
-    <td><a href='https://github.com/tonyantony300/dashbeam/releases/download/v0.7.2/DashBeam_0.7.2_amd64.deb'>DashBeam.deb</a></td>
-    <td><a href='https://github.com/tonyantony300/dashbeam/releases/download/v0.7.2/DashBeam-0.7.2-1.x86_64.rpm'>.rpm</a>, <a href='https://github.com/tonyantony300/dashbeam/releases/download/v0.7.2/DashBeam_0.7.2_amd64.AppImage'>AppImage</a></td>
-    <td>~13 MB</td>
-  </tr>
-  <tr>
-    <td>📱 <b>Android</b></td>
-    <td><div align="center">
-<a href="https://play.google.com/store/apps/details?id=com.dashbeam.android"><img src="assets/gplay.png" height="30" alt="Get it on Google Play"></a>
-</div>
-</td>
-    <td><a href='https://github.com/tonyantony300/dashbeam/releases/download/v0.7.2/DashBeam-v0.7.2-arm64.apk'>arm64 APK</a>, <a href='https://github.com/tonyantony300/dashbeam/releases/download/v0.7.2/DashBeam-v0.7.2-armv7.apk'>armv7</a>, <a href='https://github.com/tonyantony300/dashbeam/releases/download/v0.7.2/DashBeam-v0.7.2-universal.apk'>universal</a></td>
-    <td>~15 MB</td>
-  </tr>
-  <tr>
-    <td>⌨️ <b>CLI</b></td>
-    <td><a href='https://www.dashbeam.net/en/downloads'>Downloads</a></td>
-    <td>-</td>
-    <td>~4-5 MB</td>
-  </tr>
-  <tr>
-    <td>🌐 <b>Web (Limited throughput)</b></td>
-    <td><a href='https://app.dashbeam.net'>app.dashbeam.net</a></td>
-    <td>-</td>
-    <td>_</td>
-  </tr>
-</table>
+```sh
+./scripts/bundle-macos.sh
+open target/release/DashBeam.app
+```
 
-More options at [GitHub Releases](https://github.com/tonyantony300/dashbeam/releases) or in [Downloads](https://www.dashbeam.net/en/downloads) page.
+It interoperates with other DashBeam apps (desktop, Android, CLI) through the same tickets, pairing, and Nearby protocol.
 
 Running into problems? See [Troubleshooting](docs/troubleshooting.md) for common issues and how to collect logs.
 
 
-
-## Supported Languages
- 🇺🇸 🇷🇺 🇫🇷 🇨🇳 🇩🇪 🇯🇵 🇮🇳 🇹🇭 🇮🇹 🇨🇿 🇪🇸 🇧🇷 🇸🇦 🇮🇷 🇰🇷  🇵🇱 🇺🇦 🇹🇷 🇳🇴 🇧🇩 🇭🇺 🇷🇸 🇹🇼 🇰🇭 🇺🇿
-
- 
 ## Ways to send
 ### Nearby devices (Recommended)
 
-Same-network apps appear under **Nearby** in **Settings → Devices** and in the **Send to a device** list while you're sharing. Pick a nearby device and **Pair & Send** to pair and start the transfer in one step - you can also pair from Settings without sharing. First contact shows a verification code on both screens. Set who can find you in **Settings → Network → Your discoverability**.
+Same-network apps appear under **Nearby** on the **Devices** tab and in the **Send to a device** list while you're sharing. Pick a nearby device and press **Send** to pair and start the transfer in one step - you can also pair from the Devices tab without sharing. First contact shows a verification code on both screens. Set who can find you in **Settings**.
 
 Uses [mDNS](https://en.wikipedia.org/wiki/Multicast_DNS) - often blocked on guest Wi-Fi and VPNs. See [Troubleshooting](docs/troubleshooting.md#the-nearby-list-is-empty) if the list stays empty.
 
 ### Paired devices
 
-Pair in **Settings → Devices** with a pairing code (works remotely, over the internet) or via a Nearby request on the same network. After pairing, **Send** appears next to that device while sharing - no ticket to copy. The receiver gets an in-app prompt. Desktop can keep running in the background and show online paired devices in the tray (**Settings → General → Startup & background**). Manual tickets and the [sendme CLI](https://www.iroh.computer/sendme) still work.
+Pair on the **Devices** tab with a pairing code (works remotely, over the internet) or via a Nearby request on the same network. After pairing, **Send** appears next to that device while sharing - no ticket to copy. The receiver gets a prompt, or nothing at all if it turned on **Auto-accept** for you. Closing the window keeps DashBeam running in the menu bar. Manual tickets and the [sendme CLI](https://www.iroh.computer/sendme) still work.
 
-### Share ticket, link or QR code (One time transfer)
+### Share ticket (One time transfer)
 
-While sharing: **QR** for a camera scan, **Share** for the system sheet, **Copy** for the raw ticket. Links use `https://app.dashbeam.net/receive?ticket=…` - on Android they open the app; elsewhere the web app, so nothing to install (large files are better in the native app). Paste a ticket, link, or full share message into Receive.
-
-
+While sharing, **Copy ticket** and send it however you like; paste it into **Receive** on the other side. Receive links (`…?ticket=…`) from other DashBeam apps work too. You can also start sharing from a terminal with `DashBeam.app/Contents/MacOS/DashBeam <files…>`.
 
 
 ## Comparison
@@ -310,9 +257,6 @@ Thank you for checking out this project! If you find it useful, consider giving 
 
 <br>
 
-<div align="center">
-<a href="https://play.google.com/store/apps/details?id=com.dashbeam.android"><img src="assets/gplay.png" height="60" alt="Get it on Google Play"></a>
-</div>
 
 
 
@@ -324,7 +268,7 @@ Thank you for checking out this project! If you find it useful, consider giving 
 [badge-website]: https://img.shields.io/badge/website-dashbeam.net-orange
 [badge-version]: https://img.shields.io/badge/version-0.7.2-blue
 [badge-discord]: https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white
-[badge-platforms]: https://img.shields.io/badge/platforms-macOS%2C%20Windows%2C%20Linux%2C%20Android%2C%20CLI%2C%20-green
+[badge-platforms]: https://img.shields.io/badge/platform-macOS-green
 [badge-sponsor]: https://img.shields.io/badge/sponsor-ff69b4
 
 

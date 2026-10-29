@@ -1,17 +1,17 @@
-use protocol::{
-    download_to_store, get_or_create_secret, AppHandle, DiscoveryModeOption, ReceiveOptions,
-};
+use crate::export::export_to_directory;
+use crate::storage;
+use crate::types::ReceiveResult;
 use iroh::endpoint::presets;
 use iroh::{
     address_lookup::{dns::DnsAddressLookup, pkarr::PkarrResolver},
     Endpoint,
 };
 use iroh_blobs::ticket::BlobTicket;
+use protocol::{
+    download_to_store, get_or_create_secret, AppHandle, DiscoveryModeOption, ReceiveOptions,
+};
 use std::str::FromStr;
 use tokio::select;
-use crate::export::export_to_directory;
-use crate::storage;
-use crate::types::ReceiveResult;
 
 fn emit_event_with_payload(app_handle: &AppHandle, event_name: &str, payload: &str) {
     if let Some(handle) = app_handle {
@@ -31,8 +31,7 @@ pub async fn download(
     let addr = ticket.addr().clone();
     let secret_key = get_or_create_secret()?;
 
-    let custom_infra =
-        protocol::uses_custom_infra(&options.discovery_mode, &options.relay_mode);
+    let custom_infra = protocol::uses_custom_infra(&options.discovery_mode, &options.relay_mode);
     let mut builder =
         protocol::with_system_ca_if_custom(Endpoint::builder(presets::Minimal), custom_infra)
             .alpns(vec![])
@@ -52,9 +51,7 @@ pub async fn download(
                 }
                 builder
             }
-            DiscoveryModeOption::Default => {
-                builder.address_lookup(DnsAddressLookup::n0_dns())
-            }
+            DiscoveryModeOption::Default => builder.address_lookup(DnsAddressLookup::n0_dns()),
         };
     }
     if let Some(addr) = options.magic_ipv4_addr {
@@ -69,10 +66,9 @@ pub async fn download(
         storage::create_recv_store(&ticket.hash().to_hex().to_string()).await?;
     let mut cleanup_guard = storage::recv_cleanup_guard(iroh_data_dir);
     let db2 = db.clone();
-    let output_dir = options
-        .output_dir
-        .clone()
-        .unwrap_or_else(|| dirs::download_dir().unwrap_or_else(|| std::env::current_dir().unwrap()));
+    let output_dir = options.output_dir.clone().unwrap_or_else(|| {
+        dirs::download_dir().unwrap_or_else(|| std::env::current_dir().unwrap())
+    });
 
     let transfer = async {
         let downloaded =
@@ -80,8 +76,7 @@ pub async fn download(
 
         let export_start = std::time::Instant::now();
         let conflicts = export_to_directory(&db, downloaded.collection, &output_dir).await?;
-        let export_duration_ms =
-            protocol::duration_ms(export_start.elapsed().as_secs_f64());
+        let export_duration_ms = protocol::duration_ms(export_start.elapsed().as_secs_f64());
 
         if !conflicts.is_empty() {
             let payload = serde_json::to_string(&conflicts).unwrap_or_else(|_| "[]".to_string());
@@ -151,9 +146,7 @@ pub async fn download(
 mod tests {
     use super::*;
     use crate::send::start_share;
-    use protocol::{
-        AddrInfoOptions, FileMetadata, RelayModeOption, SendOptions,
-    };
+    use protocol::{AddrInfoOptions, FileMetadata, RelayModeOption, SendOptions};
     use std::io::Write;
     use tempfile::NamedTempFile;
 

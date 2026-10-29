@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 use std::str::FromStr;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RelayConfigArg {
     pub mode: String,
     pub urls: Vec<String>,
@@ -176,13 +176,15 @@ async fn probe_relay_mode(relay_mode: RelayModeOption) -> Result<Option<String>,
 
     let secret_key = get_or_create_secret().map_err(|e| e.to_string())?;
     let custom_infra = matches!(relay_mode, RelayModeOption::Custom { .. });
-    let endpoint =
-        crate::tls_config::with_system_ca_if_custom(Endpoint::builder(presets::Minimal), custom_infra)
-            .secret_key(secret_key)
-            .relay_mode(relay_mode.into())
-            .bind()
-            .await
-            .map_err(|e| format!("Failed to bind endpoint: {e}"))?;
+    let endpoint = crate::tls_config::with_system_ca_if_custom(
+        Endpoint::builder(presets::Minimal),
+        custom_infra,
+    )
+    .secret_key(secret_key)
+    .relay_mode(relay_mode.into())
+    .bind()
+    .await
+    .map_err(|e| format!("Failed to bind endpoint: {e}"))?;
 
     let online_result = timeout(RELAY_PROBE_TIMEOUT, endpoint.online()).await;
 
@@ -229,9 +231,7 @@ pub async fn resolve_relay_mode_with_fallback(
     match &preferred {
         RelayModeOption::Disabled | RelayModeOption::Default => Ok((preferred, false)),
         RelayModeOption::Custom { .. } => {
-            let probe =
-                timeout(RELAY_PROBE_TIMEOUT, probe_relay_mode(preferred.clone()))
-                    .await;
+            let probe = timeout(RELAY_PROBE_TIMEOUT, probe_relay_mode(preferred.clone())).await;
 
             let probe_result = match probe {
                 Ok(result) => result,
@@ -263,8 +263,7 @@ pub async fn get_relay_status(
     }
 
     if let RelayModeOption::Custom { .. } = &preferred {
-        let custom_probe =
-            timeout(RELAY_PROBE_TIMEOUT, probe_relay_mode(preferred.clone())).await;
+        let custom_probe = timeout(RELAY_PROBE_TIMEOUT, probe_relay_mode(preferred.clone())).await;
 
         if let Ok(Ok(url)) = custom_probe {
             return Ok(RelayStatusResponse {
@@ -342,13 +341,15 @@ pub async fn verify_relays(relay: RelayConfigArg) -> Result<VerifyRelaysResponse
     let secret_key = get_or_create_secret().map_err(|e| e.to_string())?;
     let custom_infra = matches!(relay_mode, RelayModeOption::Custom { .. });
 
-    let endpoint =
-        crate::tls_config::with_system_ca_if_custom(Endpoint::builder(presets::Minimal), custom_infra)
-            .secret_key(secret_key)
-            .relay_mode(relay_mode.into())
-            .bind()
-            .await
-            .map_err(|e| format!("Failed to bind endpoint: {e}"))?;
+    let endpoint = crate::tls_config::with_system_ca_if_custom(
+        Endpoint::builder(presets::Minimal),
+        custom_infra,
+    )
+    .secret_key(secret_key)
+    .relay_mode(relay_mode.into())
+    .bind()
+    .await
+    .map_err(|e| format!("Failed to bind endpoint: {e}"))?;
 
     let started = Instant::now();
 

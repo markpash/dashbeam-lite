@@ -32,12 +32,5 @@ jobs:
           # Pinned: a new cargo-audit release changing default policy (e.g.
           # failing on yanked crates) must not turn CI red on its own.
           tool: cargo-audit@0.22.2
-      - name: Audit Rust workspaces
-        run: |
-          status=0
-          for workspace in engine src-tauri wasm-bridge; do
-            echo "::group::cargo audit — ${workspace}"
-            cargo audit --file "${workspace}/Cargo.lock" || status=1
-            echo "::endgroup::"
-          done
-          exit "$status"
+      - name: Audit dependencies
+        run: cargo audit

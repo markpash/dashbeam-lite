@@ -1,0 +1,12 @@
+[workspace]
+members = ["app", "engine", "engine/protocol", "engine/native"]
+default-members = ["app"]
+resolver = "2"
+
+[profile.release]
+opt-level = "s"
+codegen-units = 1
+lto = true
+debug = "none"
+strip = true
+panic = "abort"

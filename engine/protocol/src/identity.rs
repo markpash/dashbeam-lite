@@ -122,77 +122,22 @@ pub fn is_placeholder_display_name(name: &str) -> bool {
 }
 
 pub fn default_display_name() -> String {
-    #[cfg(target_os = "android")]
-    if let Some(name) = android_default_display_name() {
-        return name;
-    }
-
-    let raw = std::env::var("HOSTNAME")
-        .or_else(|_| std::env::var("COMPUTERNAME"))
-        .unwrap_or_else(|_| {
-            if cfg!(target_os = "android") {
-                "Android Phone".to_string()
-            } else {
-                "DashBeam Device".to_string()
-            }
-        });
-    let trimmed = raw.trim_end_matches(".local").trim();
-    if trimmed.is_empty() {
-        if cfg!(target_os = "android") {
-            "Android Phone".to_string()
-        } else {
-            "DashBeam Device".to_string()
-        }
+    let name = std::process::Command::new("scutil")
+        .args(["--get", "ComputerName"])
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        .unwrap_or_default();
+    if name.is_empty() {
+        "DashBeam Device".to_string()
     } else {
-        trimmed.to_string()
-    }
-}
-
-#[cfg(target_os = "android")]
-fn android_default_display_name() -> Option<String> {
-    // Prefer the user-facing marketed name when OEMs expose it.
-    for key in [
-        "ro.product.marketname",
-        "ro.product.model",
-        "ro.product.name",
-        "net.hostname",
-    ] {
-        if let Some(value) = android_getprop(key) {
-            let trimmed = value.trim();
-            if !trimmed.is_empty() && !is_placeholder_display_name(trimmed) {
-                return Some(trimmed.to_string());
-            }
-        }
-    }
-    None
-}
-
-#[cfg(target_os = "android")]
-fn android_getprop(key: &str) -> Option<String> {
-    let output = std::process::Command::new("getprop").arg(key).output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if value.is_empty() {
-        None
-    } else {
-        Some(value)
+        name
     }
 }
 
 pub fn default_device_type() -> String {
-    if cfg!(any(target_os = "ios", target_os = "android")) {
-        "phone".to_string()
-    } else if cfg!(target_os = "macos") {
-        detect_macos_device_type().unwrap_or_else(|| "laptop".to_string())
-    } else if cfg!(target_os = "linux") {
-        detect_linux_device_type().unwrap_or_else(|| "desktop".to_string())
-    } else if cfg!(target_os = "windows") {
-        detect_windows_device_type().unwrap_or_else(|| "desktop".to_string())
-    } else {
-        "desktop".to_string()
-    }
+    detect_macos_device_type().unwrap_or_else(|| "laptop".to_string())
 }
 
 /// Classify a Mac from `hw.model` when the identifier is unambiguous.
@@ -217,7 +162,6 @@ pub fn device_type_from_mac_model(model: &str) -> Option<&'static str> {
     None
 }
 
-#[cfg(target_os = "macos")]
 fn detect_macos_device_type() -> Option<String> {
     if let Some(model) = macos_hw_model() {
         if let Some(kind) = device_type_from_mac_model(&model) {
@@ -234,12 +178,6 @@ fn detect_macos_device_type() -> Option<String> {
     })
 }
 
-#[cfg(not(target_os = "macos"))]
-fn detect_macos_device_type() -> Option<String> {
-    None
-}
-
-#[cfg(target_os = "macos")]
 fn macos_hw_model() -> Option<String> {
     let output = std::process::Command::new("sysctl")
         .args(["-n", "hw.model"])
@@ -256,7 +194,6 @@ fn macos_hw_model() -> Option<String> {
     }
 }
 
-#[cfg(target_os = "macos")]
 fn macos_has_internal_battery() -> Option<bool> {
     let output = std::process::Command::new("pmset")
         .args(["-g", "batt"])
@@ -269,112 +206,9 @@ fn macos_has_internal_battery() -> Option<bool> {
     Some(text.contains("InternalBattery"))
 }
 
-/// Map SMBIOS chassis type codes to a form-factor string.
-///
-/// See [SMBIOS Reference Specification](https://www.dmtf.org/standards/smbios) —
-/// System Enclosure or Chassis Types.
-pub fn device_type_from_chassis(chassis: u32) -> Option<&'static str> {
-    match chassis {
-        // Portable / Laptop / Notebook / Sub Notebook / Convertible
-        8 | 9 | 10 | 14 | 31 => Some("laptop"),
-        // Tablet / Detachable
-        30 | 32 => Some("tablet"),
-        // Hand Held
-        11 => Some("phone"),
-        // Desktop, towers, AIO, server/blade, mini PC, etc.
-        3 | 4 | 5 | 6 | 7 | 13 | 15 | 16 | 17 | 23 | 24 | 28 | 29 | 34 | 35 | 36 => {
-            Some("desktop")
-        }
-        _ => None,
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn detect_linux_device_type() -> Option<String> {
-    let raw = std::fs::read_to_string("/sys/class/dmi/id/chassis_type").ok()?;
-    let chassis = raw.trim().parse::<u32>().ok()?;
-    device_type_from_chassis(chassis).map(str::to_string)
-}
-
-#[cfg(not(target_os = "linux"))]
-fn detect_linux_device_type() -> Option<String> {
-    None
-}
-
-#[cfg(target_os = "windows")]
-fn detect_windows_device_type() -> Option<String> {
-    // SMBIOS chassis via WMI needs a process spawn; battery presence is instant
-    // and correctly separates almost all laptops from desktops.
-    windows_has_system_battery().map(|has_battery| {
-        if has_battery {
-            "laptop".to_string()
-        } else {
-            "desktop".to_string()
-        }
-    })
-}
-
-#[cfg(not(target_os = "windows"))]
-fn detect_windows_device_type() -> Option<String> {
-    None
-}
-
-/// `BatteryFlag` bit for "no system battery" from `SYSTEM_POWER_STATUS`.
-#[cfg(target_os = "windows")]
-const BATTERY_FLAG_NO_BATTERY: u8 = 128;
-
-#[cfg(target_os = "windows")]
-fn windows_has_system_battery() -> Option<bool> {
-    #[repr(C)]
-    struct SystemPowerStatus {
-        ac_line_status: u8,
-        battery_flag: u8,
-        battery_life_percent: u8,
-        system_status_flag: u8,
-        battery_life_time: u32,
-        battery_full_life_time: u32,
-    }
-
-    #[link(name = "kernel32")]
-    extern "system" {
-        fn GetSystemPowerStatus(status: *mut SystemPowerStatus) -> i32;
-    }
-
-    let mut status = SystemPowerStatus {
-        ac_line_status: 0,
-        battery_flag: 0,
-        battery_life_percent: 0,
-        system_status_flag: 0,
-        battery_life_time: 0,
-        battery_full_life_time: 0,
-    };
-    // SAFETY: status is a valid writable SYSTEM_POWER_STATUS.
-    let ok = unsafe { GetSystemPowerStatus(&mut status) };
-    if ok == 0 {
-        return None;
-    }
-    Some(status.battery_flag & BATTERY_FLAG_NO_BATTERY == 0)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{
-        device_type_from_chassis, device_type_from_mac_model, is_placeholder_display_name,
-    };
-
-    #[test]
-    fn chassis_maps_laptops_and_desktops() {
-        assert_eq!(device_type_from_chassis(9), Some("laptop"));
-        assert_eq!(device_type_from_chassis(10), Some("laptop"));
-        assert_eq!(device_type_from_chassis(14), Some("laptop"));
-        assert_eq!(device_type_from_chassis(31), Some("laptop"));
-        assert_eq!(device_type_from_chassis(3), Some("desktop"));
-        assert_eq!(device_type_from_chassis(7), Some("desktop"));
-        assert_eq!(device_type_from_chassis(13), Some("desktop"));
-        assert_eq!(device_type_from_chassis(35), Some("desktop"));
-        assert_eq!(device_type_from_chassis(30), Some("tablet"));
-        assert_eq!(device_type_from_chassis(2), None);
-    }
+    use super::{device_type_from_mac_model, is_placeholder_display_name};
 
     #[test]
     fn mac_model_maps_clear_identifiers() {
@@ -417,7 +251,8 @@ mod fingerprint_tests {
         assert_eq!(fp.len(), 14, "12 chars plus 2 dashes");
         assert_eq!(fp.matches('-').count(), 2);
         assert!(
-            fp.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '-'),
+            fp.chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '-'),
             "base32 alphabet is A-Z and 2-7: {fp}"
         );
     }
@@ -562,7 +397,10 @@ mod folder_name_tests {
             "Tony's MacBook"
         );
         assert_eq!(sanitize_folder_name("  Studio Mac  ", "fb"), "Studio Mac");
-        assert_eq!(sanitize_folder_name("\u{65e5}\u{672c}\u{8a9e}", "fb"), "\u{65e5}\u{672c}\u{8a9e}");
+        assert_eq!(
+            sanitize_folder_name("\u{65e5}\u{672c}\u{8a9e}", "fb"),
+            "\u{65e5}\u{672c}\u{8a9e}"
+        );
     }
 
     #[test]

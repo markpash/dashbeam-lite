@@ -26,8 +26,7 @@ Please describe what's happening and what you would have expected instead.
 ## Your environment
 
 - DashBeam version:
-- OS and version (e.g. macOS 14, Windows 11, Fedora 41, Android 14):
-- How you installed it (.AppImage, .deb, .rpm, Flatpak, .msi, .exe, .dmg, .apk):
+- macOS version (e.g. macOS 15.2):
 - Did it work in an earlier version? If so, which:
 
 **If the problem involves Nearby / local discovery**, please also tell us:
@@ -39,14 +38,7 @@ Please describe what's happening and what you would have expected instead.
 **If the problem involves sending or receiving files**, please also tell us:
 
 - The other device's platform and version:
-- Relay mode (Settings → Network → Relay servers), Automatic / Custom / Disabled:
-- Does **Test connection** succeed on both devices?
-
-**If the problem is visual** (a blank window, rendering glitches, missing UI) and
-you're on Linux:
-
-- Desktop environment, and Wayland or X11 (`echo $XDG_SESSION_TYPE`):
-- Graphics hardware (`fastfetch --pipe` or `inxi -GSx`):
+- Relay mode (Settings → Relay servers): Public / Custom / Disabled:
 
 ## Logs
 

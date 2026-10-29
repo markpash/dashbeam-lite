@@ -7,10 +7,7 @@ use crate::types::{apply_options, AddrInfoOptions, AppHandle, FileMetadata};
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use iroh::{endpoint::RelayMode, Endpoint};
 use iroh_blobs::{
-    api::TempTag,
-    provider::events::ProviderMessage,
-    ticket::BlobTicket,
-    BlobFormat, BlobsProtocol,
+    api::TempTag, provider::events::ProviderMessage, ticket::BlobTicket, BlobFormat, BlobsProtocol,
 };
 use n0_future::{task::AbortOnDropHandle, StreamExt};
 use std::io::ErrorKind;
@@ -135,7 +132,8 @@ fn emit_progress_event(
     if let Some(handle) = app_handle {
         let event_name = "transfer-progress";
 
-        let payload = crate::progress::format_progress_payload(bytes_transferred, total_size, speed_bps);
+        let payload =
+            crate::progress::format_progress_payload(bytes_transferred, total_size, speed_bps);
         if let Err(e) = handle.emit_event_with_payload(event_name, &payload) {
             tracing::warn!("Failed to emit progress event: {}", e);
         }
@@ -281,7 +279,10 @@ fn is_sizes_probe_request(ranges: &iroh_blobs::protocol::ChunkRangesSeq) -> bool
 
     ranges == &ChunkRangesSeq::verified_child_sizes()
         || ranges
-            == &ChunkRangesSeq::from_ranges_infinite([ChunkRanges::all(), ChunkRanges::last_chunk()])
+            == &ChunkRangesSeq::from_ranges_infinite([
+                ChunkRanges::all(),
+                ChunkRanges::last_chunk(),
+            ])
 }
 
 /// Only treat a request as the final payload transfer once nearly all bytes were sent.
@@ -688,11 +689,12 @@ mod tests {
 
     #[test]
     fn sizes_probe_detection() {
-        assert!(is_sizes_probe_request(&ChunkRangesSeq::verified_child_sizes()));
-        assert!(is_sizes_probe_request(&ChunkRangesSeq::from_ranges_infinite([
-            ChunkRanges::all(),
-            ChunkRanges::last_chunk(),
-        ])));
+        assert!(is_sizes_probe_request(
+            &ChunkRangesSeq::verified_child_sizes()
+        ));
+        assert!(is_sizes_probe_request(
+            &ChunkRangesSeq::from_ranges_infinite([ChunkRanges::all(), ChunkRanges::last_chunk(),])
+        ));
         assert!(!is_sizes_probe_request(&ChunkRangesSeq::all()));
     }
 

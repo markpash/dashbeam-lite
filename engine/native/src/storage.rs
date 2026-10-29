@@ -7,19 +7,10 @@ use iroh_blobs::store::fs::FsStore;
 use rand::RngExt;
 use std::path::{Path, PathBuf};
 
-/// Root for every blob store this crate creates. Set once by the shell
-/// (Android points it at the app cache dir, where `std::env::temp_dir()` is
-/// not writable before Android 13). Left unset, [`temp_dir`] falls back to
-/// `std::env::temp_dir()`, so tests and non-Tauri consumers keep working.
-pub static TEMP_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
-
 /// Directory name prefix of every send-side blob store.
 pub const SEND_DIR_PREFIX: &str = ".dashbeam-send-";
 /// Directory name prefix of every partial-receive blob store.
 pub const RECV_DIR_PREFIX: &str = ".dashbeam-recv-";
-/// Prefixes older builds used. Never created any more; the shell still sweeps
-/// them at launch so an upgrade leaves nothing behind in the temp dir.
-pub const LEGACY_DIR_PREFIXES: [&str; 2] = [".sendme-send-", ".sendme-recv-"];
 
 pub fn new_send_blobs_dir() -> PathBuf {
     let suffix = rand::rng().random::<[u8; 16]>();
@@ -48,6 +39,7 @@ pub fn recv_cleanup_guard(path: PathBuf) -> AutoCleanupDir {
     AutoCleanupDir::new(path)
 }
 
+/// Root for every blob store this crate creates.
 pub fn temp_dir() -> PathBuf {
-    TEMP_DIR.get().cloned().unwrap_or_else(std::env::temp_dir)
+    std::env::temp_dir()
 }

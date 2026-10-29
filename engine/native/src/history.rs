@@ -25,7 +25,6 @@ const PARTIAL_STORE_PREFIX: &str = crate::storage::RECV_DIR_PREFIX;
 /// BLAKE3 hash, hex encoded.
 const PARTIAL_STORE_HASH_LEN: usize = 64;
 
-
 pub const HISTORY_FILE: &str = "transfer-history.json";
 
 /// An unparseable history file is moved aside under this name rather than
@@ -155,9 +154,7 @@ impl TransferRecord {
 pub fn partial_store_hash(path: &Path) -> Option<String> {
     let name = path.file_name()?.to_str()?;
     let hash = name.strip_prefix(PARTIAL_STORE_PREFIX)?;
-    if hash.len() != PARTIAL_STORE_HASH_LEN
-        || !hash.bytes().all(|b| b.is_ascii_hexdigit())
-    {
+    if hash.len() != PARTIAL_STORE_HASH_LEN || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
     Some(hash.to_string())
@@ -429,7 +426,10 @@ mod tests {
 
         let records = store.list().expect("list");
         assert_eq!(records.len(), MAX_RECORDS);
-        assert_eq!(records[0].root_name, format!("file-{}.pdf", MAX_RECORDS + 4));
+        assert_eq!(
+            records[0].root_name,
+            format!("file-{}.pdf", MAX_RECORDS + 4)
+        );
         assert_eq!(records[MAX_RECORDS - 1].root_name, "file-5.pdf");
     }
 
@@ -534,17 +534,17 @@ mod tests {
         let store = TransferHistoryStore::new(dir.path());
         std::fs::write(dir.path().join(HISTORY_FILE), "{ not json").expect("corrupt");
 
-        store.open(record("after.pdf")).expect("open after corruption");
+        store
+            .open(record("after.pdf"))
+            .expect("open after corruption");
 
         let records = store.list().expect("list");
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].root_name, "after.pdf");
     }
 
-    const HASH_A: &str =
-        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    const HASH_B: &str =
-        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const HASH_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const HASH_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
     fn partial_dir(root: &Path, hash: &str) -> PathBuf {
         let dir = root.join(format!(".dashbeam-recv-{hash}"));
@@ -605,10 +605,6 @@ mod tests {
 
         assert!(is_reclaimable_partial(&inside, temp.path()));
     }
-
-
-
-
 
     #[test]
     fn reclaiming_a_record_removes_its_partial_store() {

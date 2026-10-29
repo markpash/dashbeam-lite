@@ -2,17 +2,11 @@
 # Docs: https://embarkstudios.github.io/cargo-deny/
 
 [graph]
-targets = [
-    "x86_64-unknown-linux-gnu",
-    "aarch64-unknown-linux-gnu",
-    "x86_64-pc-windows-msvc",
-    "x86_64-apple-darwin",
-    "aarch64-apple-darwin",
-]
+targets = ["x86_64-apple-darwin", "aarch64-apple-darwin"]
 all-features = true
 
 [advisories]
-# Unmaintained transitive crates (common in Tauri) are noisy.
+# Unmaintained transitive crates are noisy.
 # RustSec vulnerabilities are gated by the cargo-audit workflow.
 # Deny CI only runs bans/licenses/sources.
 unmaintained = "none"

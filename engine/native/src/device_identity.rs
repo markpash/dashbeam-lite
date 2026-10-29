@@ -163,8 +163,7 @@ impl PairedDeviceStore {
         let _guard = self.lock_file();
         let mut file = self.read_file()?;
         let id = endpoint_id.to_lowercase();
-        file.devices
-            .retain(|d| d.endpoint_id.to_lowercase() != id);
+        file.devices.retain(|d| d.endpoint_id.to_lowercase() != id);
         self.write_file(&file)?;
         Ok(())
     }
@@ -184,7 +183,10 @@ impl PairedDeviceStore {
         Ok(())
     }
 
-    pub fn mark_unpaired_remotely(&self, endpoint_id: &str) -> anyhow::Result<Option<PairedDevice>> {
+    pub fn mark_unpaired_remotely(
+        &self,
+        endpoint_id: &str,
+    ) -> anyhow::Result<Option<PairedDevice>> {
         let _guard = self.lock_file();
         let mut file = self.read_file()?;
         let id = endpoint_id.to_lowercase();
@@ -216,7 +218,6 @@ impl PairedDeviceStore {
         }
         if updated > 0 {
             self.write_file(&file)?;
-
         }
         Ok(updated)
     }
@@ -264,24 +265,15 @@ pub fn load_or_create_identity(data_dir: &Path) -> anyhow::Result<DeviceIdentity
     // collide with this endpoint on the relay.
     let endpoint_id = HEXLOWER.encode(secret.public().as_bytes());
 
-    if matches!(
-        outcome.source,
-        identity_store::SecretSource::KeychainMigrated | identity_store::SecretSource::Generated
-    ) {
-
-    }
-
     let mut identity_rotated = false;
     let mut previous_endpoint_id = None;
     let mut meta = if meta_path.exists() {
         let raw = std::fs::read_to_string(&meta_path)?;
-        let mut meta: DeviceMetaFile =
-            serde_json::from_str(&raw).context("invalid device.json")?;
+        let mut meta: DeviceMetaFile = serde_json::from_str(&raw).context("invalid device.json")?;
         if meta.endpoint_id.to_lowercase() != endpoint_id {
             identity_rotated = true;
             previous_endpoint_id = Some(meta.endpoint_id.clone());
             tracing::warn!("device.json endpoint_id mismatch; syncing to persisted identity");
-
 
             meta.endpoint_id = endpoint_id;
         }

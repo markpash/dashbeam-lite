@@ -10,8 +10,8 @@ use iroh_blobs::{
     format::collection::Collection,
     BlobFormat,
 };
-use n0_future::StreamExt;
 use n0_future::BufferedStreamExt;
+use n0_future::StreamExt;
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 use walkdir::WalkDir;
