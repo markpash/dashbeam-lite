@@ -32,7 +32,7 @@ fn main() {
         .join("com.dashbeam.desktop");
     std::fs::create_dir_all(&data_dir).expect("cannot create data directory");
 
-    let app = gpui_kit::application();
+    let app = gpui_kit::application().with_assets(gpui_kit::assets::Assets);
     app.on_reopen(open_window);
     app.run(move |cx| {
         gpui_kit::init(cx);

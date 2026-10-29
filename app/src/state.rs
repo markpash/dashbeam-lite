@@ -5,9 +5,9 @@ use crate::backend::{self, Event, Network};
 use crate::settings::Settings;
 use engine::{
     sanitize_folder_name, short_fingerprint, unix_now_ms, DeviceInfo, Discoverability,
-    FileMetadata, NearbyDevice, NodeService, PairedDeviceInfo, PairingStatus, SendResult,
-    TransferDirection, TransferHistoryStore, TransferPathType, TransferPeer, TransferRecord,
-    TransferStatus,
+    FileMetadata, NearbyDevice, NodeService, PairedDeviceInfo, PairingStatus, RelayStatusResponse,
+    SendResult, TransferDirection, TransferHistoryStore, TransferPathType, TransferPeer,
+    TransferRecord, TransferStatus,
 };
 use gpui_kit::*;
 use serde::Deserialize;
@@ -152,6 +152,8 @@ pub struct Dash {
     pub pairing_code: Option<String>,
     /// Sender side of a nearby handshake: the device asked, and our own code.
     pub verifying: Option<(String, String)>,
+    /// Which relay this device reaches; `None` while a check is running.
+    pub relay: Option<RelayStatusResponse>,
 }
 
 impl gpui_kit::EventEmitter<Toast> for Dash {}
@@ -177,7 +179,7 @@ impl Dash {
         })
         .detach();
 
-        let this = Self {
+        let mut this = Self {
             data_dir,
             settings,
             history,
@@ -196,8 +198,10 @@ impl Dash {
             queued: Vec::new(),
             pairing_code: None,
             verifying: None,
+            relay: None,
         };
         this.start_node(cx);
+        this.check_relay(cx);
         this
     }
 
@@ -815,6 +819,25 @@ impl Dash {
             })
         })
         .detach();
+    }
+
+    pub fn check_relay(&mut self, cx: &mut Context<Self>) {
+        self.relay = None;
+        let task = backend::run(engine::get_relay_status(self.settings.relay.clone()));
+        cx.spawn(async move |this, cx| {
+            let status = task.await.unwrap_or_else(|_| RelayStatusResponse {
+                kind: "unavailable".into(),
+                url: None,
+                connected: false,
+                fell_back_to_public: false,
+            });
+            this.update(cx, |this, cx| {
+                this.relay = Some(status);
+                cx.notify();
+            })
+        })
+        .detach();
+        cx.notify();
     }
 
     // History
