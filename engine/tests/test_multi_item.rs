@@ -1,7 +1,7 @@
 mod common;
 
 use common::TestFixture;
-use engine::{download, start_share_items, ReceiveOptions, SendOptions};
+use engine::{download, start_share_items, ReceiveOptions};
 
 #[tokio::test]
 async fn e2e_multi_file_roundtrip() {
@@ -13,7 +13,7 @@ async fn e2e_multi_file_roundtrip() {
 
     let share = start_share_items(
         vec![file_a, file_b, file_c],
-        SendOptions::default(),
+        common::send_options(),
         &None,
         None,
     )
@@ -64,7 +64,7 @@ async fn e2e_mixed_files_and_dirs() {
     );
     let recv_dir = fixture.output_dir();
 
-    let share = start_share_items(vec![single_file, dir], SendOptions::default(), &None, None)
+    let share = start_share_items(vec![single_file, dir], common::send_options(), &None, None)
         .await
         .expect("start_share_items should succeed");
 

@@ -1,7 +1,7 @@
 mod common;
 
 use common::TestFixture;
-use engine::{download, start_share, ReceiveOptions, SendOptions};
+use engine::{download, start_share, ReceiveOptions};
 
 #[tokio::test]
 async fn e2e_directory_roundtrip() {
@@ -15,7 +15,7 @@ async fn e2e_directory_roundtrip() {
     );
     let recv_dir = fixture.output_dir();
 
-    let share = start_share(source_dir, SendOptions::default(), None, None)
+    let share = start_share(source_dir, common::send_options(), None, None)
         .await
         .expect("start_share should succeed");
 
@@ -59,7 +59,7 @@ async fn e2e_directory_with_deep_nesting() {
     );
     let recv_dir = fixture.output_dir();
 
-    let share = start_share(source_dir, SendOptions::default(), None, None)
+    let share = start_share(source_dir, common::send_options(), None, None)
         .await
         .expect("start_share should succeed");
 

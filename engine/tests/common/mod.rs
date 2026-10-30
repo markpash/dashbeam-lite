@@ -1,12 +1,22 @@
 #![allow(dead_code, unused_imports)]
 
 use engine::{
-    DeviceInfo, Discoverability, DiscoveryModeOption, EventEmitter, NearbyDevice, NodeService,
+    AddrInfoOptions, DeviceInfo, Discoverability, DiscoveryModeOption, EventEmitter, NearbyDevice,
+    NodeService, SendOptions,
 };
 use iroh::endpoint::RelayMode;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+/// Share options as the app uses them: the ticket carries the relay and
+/// direct addresses, so tests don't depend on public DNS discovery.
+pub fn send_options() -> SendOptions {
+    SendOptions {
+        ticket_type: AddrInfoOptions::RelayAndAddresses,
+        ..Default::default()
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct MockEvent {

@@ -33,6 +33,7 @@ Useful while developing:
 ```bash
 cargo test -p sendme-protocol -p sendme-native   # unit tests
 cargo test -p engine -- --test-threads=1          # engine end-to-end tests
+cargo test -p engine --features nearby-tests -- --test-threads=1   # plus Nearby E2E (needs a LAN-friendly network)
 ```
 
 ## Commit messages

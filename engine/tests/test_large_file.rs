@@ -1,7 +1,7 @@
 mod common;
 
 use common::{MockEventEmitter, TestFixture};
-use engine::{download, start_share, ReceiveOptions, SendOptions};
+use engine::{download, start_share, ReceiveOptions};
 
 #[tokio::test]
 async fn e2e_large_file_integrity() {
@@ -9,7 +9,7 @@ async fn e2e_large_file_integrity() {
     let source = fixture.create_large_file("large.bin", 10_000_000);
     let recv_dir = fixture.output_dir();
 
-    let share = start_share(source.clone(), SendOptions::default(), None, None)
+    let share = start_share(source.clone(), common::send_options(), None, None)
         .await
         .expect("start_share should succeed");
 
@@ -52,7 +52,7 @@ async fn e2e_progress_events_emitted() {
 
     let receiver_emitter = MockEventEmitter::new();
 
-    let share = start_share(source, SendOptions::default(), None, None)
+    let share = start_share(source, common::send_options(), None, None)
         .await
         .expect("start_share should succeed");
 

@@ -31,3 +31,13 @@ iroh = { version = "1.3.0", features = ["platform-verifier"] }
 iroh-blobs = { version = "0.103.1" }
 data-encoding = "2.8.0"
 
+
+[features]
+# The Nearby E2E suite needs two nodes to form a direct path within seconds,
+# which shared CI runners can't promise. Run it locally with
+# `cargo test -p engine --features nearby-tests`.
+nearby-tests = []
+
+[[test]]
+name = "test_nearby"
+required-features = ["nearby-tests"]
