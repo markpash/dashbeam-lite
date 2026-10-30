@@ -157,6 +157,15 @@ fn info_plist(version: &str, build: &str) -> String {
     <key>NSHighResolutionCapable</key><true/>
     <key>NSLocalNetworkUsageDescription</key><string>{NAME} finds nearby devices on your local network.</string>
     <key>NSBonjourServices</key><array><string>_irohv1._udp</string></array>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key><string>File or folder to share</string>
+            <key>CFBundleTypeRole</key><string>Viewer</string>
+            <key>LSHandlerRank</key><string>Alternate</string>
+            <key>LSItemContentTypes</key><array><string>public.item</string><string>public.folder</string></array>
+        </dict>
+    </array>
 </dict>
 </plist>
 "#

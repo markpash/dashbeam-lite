@@ -41,6 +41,11 @@ fn main() {
 
     let app = gpui_kit::application().with_assets(gpui_kit::assets::Assets);
     app.on_reopen(open_window);
+    // Files dropped on the Dock icon or opened with the app arrive as URLs.
+    let (opened_tx, mut opened) = tokio::sync::mpsc::unbounded_channel::<Vec<String>>();
+    app.on_open_urls(move |urls| {
+        let _ = opened_tx.send(urls);
+    });
     app.run(move |cx| {
         gpui_kit::init(cx);
         let dash = cx.new(|cx| Dash::new(data_dir, cx));
@@ -49,6 +54,24 @@ fn main() {
         if !paths.is_empty() {
             dash.update(cx, |dash, cx| dash.start_share(paths, cx));
         }
+        let sharing = dash.clone();
+        cx.spawn(async move |cx| {
+            while let Some(urls) = opened.recv().await {
+                let paths: Vec<std::path::PathBuf> = urls
+                    .iter()
+                    .filter_map(|url| url::Url::parse(url).ok()?.to_file_path().ok())
+                    .collect();
+                if paths.is_empty() {
+                    continue;
+                }
+                let dash = sharing.clone();
+                cx.update(|cx| {
+                    open_window(cx);
+                    dash.update(cx, |dash, cx| dash.start_share(paths, cx));
+                });
+            }
+        })
+        .detach();
 
         cx.on_action(|_: &Open, cx| open_window(cx));
         cx.on_action(|_: &Quit, cx| cx.quit());

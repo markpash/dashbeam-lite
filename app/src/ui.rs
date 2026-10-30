@@ -1,6 +1,6 @@
 use crate::state::{
-    format_size, items, Dash, DashGlobal, Invite, NodeState, Progress, Receive, ShareStatus, Toast,
-    Update,
+    format_size, items, Dash, DashGlobal, Download, DownloadStatus, Invite, NodeState, Progress,
+    Share, ShareStatus, Toast, Update,
 };
 use crate::{autostart, settings::Settings, updater};
 use engine::{
@@ -8,6 +8,7 @@ use engine::{
 };
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::popover::Popover;
 use gpui_kit::component::progress::Progress as ProgressBar;
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::tab::TabBar;
@@ -20,6 +21,7 @@ use gpui_kit::*;
 use std::path::PathBuf;
 
 const TABS: [&str; 5] = ["Send", "Receive", "Devices", "History", "Settings"];
+const RECEIVE_TAB: usize = 1;
 /// Not a tab: the screen behind the globe in the title bar.
 const CONNECTIVITY: usize = TABS.len();
 
@@ -65,7 +67,17 @@ impl Shell {
 
         // gpui-component starts in light mode; follow the system instead.
         Theme::sync_system_appearance(Some(window), cx);
+        let ticket = input(window, cx, "Paste a DashBeam ticket", "");
         let subscriptions = vec![
+            cx.subscribe_in(
+                &ticket,
+                window,
+                |this: &mut Self, _, event: &InputEvent, window, cx| {
+                    if let InputEvent::PressEnter { .. } = event {
+                        this.submit_ticket(window, cx);
+                    }
+                },
+            ),
             cx.observe_window_appearance(window, |_, window, cx| {
                 Theme::sync_system_appearance(Some(window), cx);
             }),
@@ -89,7 +101,7 @@ impl Shell {
 
         Self {
             tab: 0,
-            ticket: input(window, cx, "Paste a DashBeam ticket", ""),
+            ticket,
             pair_code: input(window, cx, "Paste a pairing code", ""),
             device_name: input(window, cx, "Device name", &device),
             relay_urls: input(
@@ -138,6 +150,17 @@ impl Shell {
             dash,
             renaming: None,
             _subscriptions: subscriptions,
+        }
+    }
+
+    /// Starts a download from the ticket field, clearing it if that worked.
+    fn submit_ticket(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let ticket = self.ticket.read(cx).value().to_string();
+        let started = self
+            .dash
+            .update(cx, |d, cx| d.receive(ticket, None, None, cx));
+        if started {
+            self.ticket.update(cx, |t, cx| t.set_value("", window, cx));
         }
     }
 
@@ -252,6 +275,18 @@ impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let (bg, fg, drop) = (theme.background, theme.foreground, theme.drop_target);
+        // Badge the Send and Receive tabs with what's in progress.
+        let (sends, receives) = {
+            let dash = self.dash.read(cx);
+            (dash.active_sends(), dash.active_receives())
+        };
+        let tab_labels = TABS
+            .iter()
+            .enumerate()
+            .map(|(ix, name)| match (ix, sends, receives) {
+                (0, n, _) | (RECEIVE_TAB, _, n) if n > 0 => format!("{name} · {n}"),
+                _ => name.to_string(),
+            });
         let content = match self.tab {
             0 => self.send(cx).into_any_element(),
             1 => self.receive(cx).into_any_element(),
@@ -279,7 +314,7 @@ impl Render for Shell {
                                     this.tab = *ix;
                                     cx.notify();
                                 }))
-                                .children(TABS),
+                                .children(tab_labels),
                         )
                         .child(
                             div()
@@ -336,10 +371,10 @@ fn row() -> Div {
     h_flex().gap_2().items_center()
 }
 
-fn progress_line(p: &Progress, cx: &App) -> Div {
+fn progress_line(id: impl Into<ElementId>, p: &Progress, cx: &App) -> Div {
     v_flex()
         .gap_1()
-        .child(ProgressBar::new("progress").value(p.fraction() * 100.0))
+        .child(ProgressBar::new(id).value(p.fraction() * 100.0))
         .child(muted(
             format!(
                 "{} of {} · {}/s{}",
@@ -381,6 +416,23 @@ fn check_row(check: Check, title: &str, detail: impl Into<SharedString>, cx: &Ap
                 .child(title.to_string())
                 .child(muted(detail, cx)),
         )
+}
+
+/// Page title, with "Clear finished" once more than one item is done.
+fn list_header(title: &str, finished: usize, sends: bool, cx: &Context<Shell>) -> Div {
+    row()
+        .child(div().flex_1().child(heading(title.to_string())))
+        .when(finished > 1, |row| {
+            row.child(
+                Button::new("clear-finished")
+                    .ghost()
+                    .small()
+                    .label("Clear finished")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.dash.update(cx, |d, cx| d.clear_finished(sends, cx))
+                    })),
+            )
+        })
 }
 
 fn device_label(name: Option<&str>, endpoint_id: &str) -> String {
@@ -448,6 +500,7 @@ impl Shell {
                 ),
             };
             let (accept_id, decline_id) = (id.clone(), id);
+            let files = matches!(invite, Invite::Files { .. });
             banners =
                 banners.child(
                     card(cx)
@@ -465,7 +518,11 @@ impl Shell {
                         .child(Button::new("accept").primary().label("Accept").on_click(
                             cx.listener(move |this, _, _, cx| {
                                 this.dash
-                                    .update(cx, |d, cx| d.answer_invite(&accept_id, true, cx))
+                                    .update(cx, |d, cx| d.answer_invite(&accept_id, true, cx));
+                                if files {
+                                    // Show the download that just started.
+                                    this.tab = RECEIVE_TAB;
+                                }
                             }),
                         )),
                 );
@@ -536,71 +593,84 @@ impl Shell {
 
     fn send(&mut self, cx: &mut Context<Self>) -> Div {
         let dash = self.dash.read(cx);
-        if let Some(preparing) = &dash.preparing {
-            let mut card = card(cx)
-                .child(heading(preparing.title.clone()))
-                .child(muted("Preparing transfer…", cx));
-            if preparing.progress.total > 0 {
-                card = card.child(progress_line(&preparing.progress, cx));
-            }
-            card =
-                card.child(
-                    row().justify_end().child(
-                        Button::new("cancel-prepare")
-                            .label("Cancel")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.dash.update(cx, |d, cx| d.cancel_preparing(cx))
-                            })),
-                    ),
-                );
-            return v_flex().gap_4().child(card);
-        }
-        let Some(share) = &dash.share else {
-            let border = cx.theme().border;
-            return v_flex().gap_4().child(heading("Send")).child(
-                v_flex()
-                    .gap_3()
-                    .items_center()
-                    .justify_center()
-                    .h(px(260.))
-                    .rounded_lg()
-                    .border_2()
-                    .border_dashed()
-                    .border_color(border)
-                    .child(muted("Drop files or folders here", cx))
-                    .child(
-                        Button::new("choose")
-                            .primary()
-                            .label("Choose…")
-                            .on_click(cx.listener(|this, _, _, cx| this.pick_files(cx))),
-                    ),
-            );
-        };
-
-        let more = share.meta.item_count.saturating_sub(1);
-        let title = if more > 0 {
-            format!("{} and {more} more", share.meta.file_name)
+        let border = cx.theme().border;
+        let choose = Button::new("choose")
+            .primary()
+            .label("Choose…")
+            .on_click(cx.listener(|this, _, _, cx| this.pick_files(cx)));
+        let drop_zone = if dash.shares.is_empty() {
+            v_flex()
+                .gap_3()
+                .items_center()
+                .justify_center()
+                .h(px(260.))
+                .child(muted("Drop files or folders here", cx))
+                .child(choose)
         } else {
-            share.meta.file_name.clone()
-        };
+            h_flex()
+                .gap_3()
+                .items_center()
+                .justify_center()
+                .p_3()
+                .child(muted("Drop more files or folders, or", cx))
+                .child(choose.small())
+        }
+        .rounded_lg()
+        .border_2()
+        .border_dashed()
+        .border_color(border);
+
+        // Devices a share can be offered to: online paired ones, then nearby.
+        let devices: Vec<(String, String)> = dash
+            .paired
+            .iter()
+            .filter(|d| d.online && d.pairing_status == PairingStatus::Active)
+            .map(|d| (d.endpoint_id.clone(), d.display_name.clone()))
+            .chain(dash.nearby.iter().filter(|d| d.identified).map(|d| {
+                (
+                    d.endpoint_id.clone(),
+                    device_label(d.display_name.as_deref(), &d.endpoint_id),
+                )
+            }))
+            .collect();
+        let finished = dash.shares.iter().filter(|s| !s.active()).count();
+        let mut page = v_flex()
+            .gap_4()
+            .child(list_header("Send", finished, true, cx))
+            .child(drop_zone);
+        for share in &dash.shares {
+            page = page.child(self.share_card(share, &devices, cx));
+        }
+        page
+    }
+
+    fn share_card(&self, share: &Share, devices: &[(String, String)], cx: &Context<Self>) -> Div {
+        let tag = share.tag;
+        let id = tag as usize;
         let status = match share.status {
-            ShareStatus::Waiting => "Waiting for the receiver to connect",
+            ShareStatus::Preparing => "Preparing transfer…",
+            ShareStatus::Waiting => "Waiting for a receiver",
             ShareStatus::Transferring => "Sending…",
-            ShareStatus::Done => "Transfer complete",
+            ShareStatus::Done => "Sent",
             ShareStatus::Failed => "Transfer failed",
         };
-        let ticket = share.ticket.clone();
-        let done = matches!(share.status, ShareStatus::Done | ShareStatus::Failed);
-
-        let mut main = card(cx).child(heading(title)).child(muted(
-            format!("{} · {status}", format_size(share.meta.size)),
-            cx,
-        ));
-        if share.status == ShareStatus::Transferring {
-            main = main.child(progress_line(&share.progress, cx));
+        let summary = match &share.meta {
+            Some(meta) => format!("{} · {status}", format_size(meta.size)),
+            None => status.to_string(),
+        };
+        let mut card = card(cx)
+            .child(heading(share.title.clone()))
+            .child(muted(summary, cx));
+        let show_progress = match share.status {
+            ShareStatus::Preparing => share.progress.total > 0,
+            ShareStatus::Transferring => true,
+            _ => false,
+        };
+        if show_progress {
+            card = card.child(progress_line(("progress", id), &share.progress, cx));
         }
-        if share.status == ShareStatus::Waiting {
-            main = main.child(
+        if let (ShareStatus::Waiting, Some(ticket)) = (share.status, share.ticket.clone()) {
+            card = card.child(
                 row()
                     .child(
                         div()
@@ -610,159 +680,166 @@ impl Shell {
                             .font_family("Menlo")
                             .child(ticket.clone()),
                     )
-                    .child(
-                        Button::new("copy")
-                            .label("Copy ticket")
-                            .on_click(cx.listener(move |_, _, window, cx| {
-                                cx.write_to_clipboard(ClipboardItem::new_string(ticket.clone()));
-                                window.push_notification("Ticket copied", cx);
-                            })),
-                    ),
+                    .child(Button::new(("copy", id)).label("Copy ticket").on_click(
+                        move |_, window, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(ticket.clone()));
+                            window.push_notification("Ticket copied", cx);
+                        },
+                    )),
             );
         }
-        main =
-            main.child(
-                row().justify_end().child(
-                    Button::new("stop")
-                        .label(if done { "Done" } else { "Stop sharing" })
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.dash.update(cx, |d, cx| d.stop_share(cx))
-                        })),
-                ),
-            );
+        if let Some((_, text)) = &share.invite {
+            card = card.child(muted(text.clone(), cx));
+        }
 
-        let mut targets = card(cx).child(heading("Send to a device"));
-        let mut any = false;
-        let invite = share.invite.clone();
-        let paired = dash
-            .paired
-            .iter()
-            .filter(|d| d.online && d.pairing_status == PairingStatus::Active)
-            .map(|d| (d.endpoint_id.clone(), d.display_name.clone()));
-        let nearby = dash.nearby.iter().filter(|d| d.identified).map(|d| {
-            (
-                d.endpoint_id.clone(),
-                device_label(d.display_name.as_deref(), &d.endpoint_id),
-            )
-        });
-        for (ix, (id, name)) in paired.chain(nearby).enumerate() {
-            any = true;
-            let status = invite
-                .as_ref()
-                .filter(|(target, _)| target.eq_ignore_ascii_case(&id))
-                .map(|(_, s)| s.clone());
-            let target = id.clone();
-            targets = targets.child(
-                row()
-                    .child(div().flex_1().child(name))
-                    .children(status.map(|s| muted(s, cx)))
-                    .child(
-                        Button::new(("send-to", ix))
-                            .label("Send")
-                            .disabled(done)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                let target = target.clone();
-                                this.dash.update(cx, |d, cx| d.send_to(target, cx))
-                            })),
-                    ),
+        let mut actions = row().justify_end();
+        if share.ticket.is_some() && share.active() && !devices.is_empty() {
+            let devices = devices.to_vec();
+            let dash = self.dash.clone();
+            actions = actions.child(
+                Popover::new(("send-to", id))
+                    .anchor(Anchor::TopRight)
+                    .trigger(Button::new(("send-to-button", id)).label("Send to…"))
+                    .content(move |_, _, cx| {
+                        let mut list = v_flex().gap_1().min_w(px(200.));
+                        for (ix, (endpoint_id, name)) in devices.iter().enumerate() {
+                            let (dash, endpoint_id) = (dash.clone(), endpoint_id.clone());
+                            list = list.child(
+                                Button::new(("device", ix))
+                                    .ghost()
+                                    .label(name.clone())
+                                    .on_click(cx.listener(move |state, _, window, cx| {
+                                        let endpoint_id = endpoint_id.clone();
+                                        dash.update(cx, |d, cx| d.send_to(tag, endpoint_id, cx));
+                                        state.dismiss(window, cx);
+                                    })),
+                            );
+                        }
+                        list
+                    }),
             );
         }
-        if !any {
-            targets = targets.child(muted("No paired or nearby devices online", cx));
-        }
-        v_flex().gap_4().child(main).child(targets)
+        let stop_label = match share.status {
+            ShareStatus::Preparing => "Cancel",
+            ShareStatus::Done | ShareStatus::Failed => "Dismiss",
+            _ => "Stop sharing",
+        };
+        actions = actions.child(Button::new(("stop", id)).label(stop_label).on_click(
+            cx.listener(move |this, _, _, cx| this.dash.update(cx, |d, cx| d.stop_share(tag, cx))),
+        ));
+        card.child(actions)
     }
 
     fn receive(&mut self, cx: &mut Context<Self>) -> Div {
         let dash = self.dash.read(cx);
-        let page = v_flex().gap_4().child(heading("Receive"));
-        match &dash.receive {
-            Receive::Running { name, progress, .. } => page.child(
-                card(cx)
+        let folder = dash.settings.download_dir();
+        let error = dash.ticket_error.clone();
+        let form = card(cx)
+            .child(Input::new(&self.ticket))
+            .children(error.map(|e| div().text_sm().text_color(cx.theme().danger).child(e)))
+            .child(
+                row()
                     .child(
-                        div().child(
-                            name.clone()
-                                .unwrap_or_else(|| "Connecting to sender…".into()),
-                        ),
+                        div()
+                            .flex_1()
+                            .child(muted(format!("Saving to {}", folder.display()), cx)),
                     )
-                    .child(progress_line(progress, cx))
-                    .child(row().justify_end().child(
-                        Button::new("cancel").label("Cancel").on_click(cx.listener(
-                            |this, _, _, cx| this.dash.update(cx, |d, cx| d.cancel_receive(cx)),
-                        )),
+                    .child(Button::new("receive").primary().label("Receive").on_click(
+                        cx.listener(|this, _, window, cx| this.submit_ticket(window, cx)),
                     )),
-            ),
-            Receive::Done {
-                name,
-                reveal,
-                conflicts,
-            } => {
-                let reveal = reveal.clone();
-                page.child(
-                    card(cx)
-                        .child(div().child(format!("Received {name}")))
-                        .when(*conflicts > 0, |c| {
-                            c.child(muted(
-                                format!(
-                                    "{} renamed to avoid overwriting existing files",
-                                    items(*conflicts)
-                                ),
-                                cx,
-                            ))
-                        })
-                        .child(
-                            row()
-                                .justify_end()
-                                .child(
-                                    Button::new("reveal")
-                                        .label("Show in Finder")
-                                        .on_click(move |_, _, cx| cx.reveal_path(&reveal)),
-                                )
-                                .child(Button::new("done").primary().label("Done").on_click(
-                                    cx.listener(|this, _, _, cx| {
-                                        this.dash.update(cx, |d, cx| d.cancel_receive(cx))
-                                    }),
-                                )),
-                        ),
+            );
+        let finished = dash
+            .downloads
+            .iter()
+            .filter(|d| d.status != DownloadStatus::Running)
+            .count();
+        let mut page = v_flex()
+            .gap_4()
+            .child(list_header("Receive", finished, false, cx))
+            .child(form);
+        for download in &dash.downloads {
+            page = page.child(self.download_card(download, cx));
+        }
+        page
+    }
+
+    fn download_card(&self, download: &Download, cx: &Context<Self>) -> Div {
+        let tag = download.tag;
+        let id = tag as usize;
+        let dismiss = Button::new(("dismiss", id))
+            .ghost()
+            .label("Dismiss")
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.dash.update(cx, |d, cx| d.dismiss_download(tag, cx))
+            }));
+        match &download.status {
+            DownloadStatus::Running => card(cx)
+                .child(
+                    div().child(match (&download.name, download.progress.total) {
+                        (Some(name), _) => name.clone(),
+                        (None, 0) => "Connecting to sender…".into(),
+                        (None, _) => "Downloading…".into(),
+                    }),
                 )
+                .when(download.progress.total > 0, |card| {
+                    card.child(progress_line(("progress", id), &download.progress, cx))
+                })
+                .child(
+                    row().justify_end().child(
+                        Button::new(("cancel", id))
+                            .label("Cancel")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.dash.update(cx, |d, cx| d.cancel_download(tag, cx))
+                            })),
+                    ),
+                ),
+            DownloadStatus::Done => {
+                let reveal = download.reveal.clone();
+                card(cx)
+                    .child(div().child(format!(
+                        "Received {}",
+                        download.name.as_deref().unwrap_or("files")
+                    )))
+                    .when(download.conflicts > 0, |c| {
+                        c.child(muted(
+                            format!(
+                                "{} renamed to avoid overwriting existing files",
+                                items(download.conflicts)
+                            ),
+                            cx,
+                        ))
+                    })
+                    .child(
+                        row()
+                            .justify_end()
+                            .child(dismiss)
+                            .children(reveal.map(|reveal| {
+                                Button::new(("reveal", id))
+                                    .label("Show in Finder")
+                                    .on_click(move |_, _, cx| cx.reveal_path(&reveal))
+                            })),
+                    )
             }
-            state => {
-                let error = match state {
-                    Receive::Failed(error) => Some(error.clone()),
-                    _ => None,
-                };
-                let folder = dash.settings.download_dir();
-                let busy = dash.busy();
-                page.child(
-                    card(cx)
-                        .child(Input::new(&self.ticket))
-                        .children(
-                            error.map(|e| div().text_sm().text_color(cx.theme().danger).child(e)),
-                        )
-                        .child(
-                            row()
-                                .child(
-                                    div().flex_1().child(muted(
-                                        format!("Saving to {}", folder.display()),
-                                        cx,
-                                    )),
-                                )
-                                .child(
-                                    Button::new("receive")
-                                        .primary()
-                                        .label("Receive")
-                                        .disabled(busy)
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            let ticket = this.ticket.read(cx).value().to_string();
-                                            this.ticket
-                                                .update(cx, |t, cx| t.set_value("", window, cx));
-                                            this.dash
-                                                .update(cx, |d, cx| d.receive(ticket, None, cx));
-                                        })),
-                                ),
-                        ),
+            DownloadStatus::Failed(error) => card(cx)
+                .child(div().child(format!(
+                    "Couldn't receive {}",
+                    download.name.as_deref().unwrap_or("files")
+                )))
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().danger)
+                        .child(error.clone()),
                 )
-            }
+                .child(
+                    row().justify_end().child(dismiss).child(
+                        Button::new(("retry", id))
+                            .label("Retry")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.dash.update(cx, |d, cx| d.retry_download(tag, cx))
+                            })),
+                    ),
+                ),
         }
     }
 

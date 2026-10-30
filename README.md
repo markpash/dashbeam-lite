@@ -16,8 +16,9 @@ This fork keeps DashBeam's transfer engine and protocol, so it works with the re
 
 ## What it does
 
-- **Send** files or folders by dropping them on the window or choosing them, then copy the ticket.
+- **Send** files or folders by dropping them on the window or the Dock icon, choosing them, or using **Open With**, then copy the ticket.
 - **Receive** by pasting a ticket. Receive links from other DashBeam apps work too.
+- **Many at once**: any number of sends and downloads run in parallel, each with its own progress, and the tabs and menu bar show what's in flight.
 - **Nearby**: find DashBeam devices on the local network and send to them directly. First contact shows a verification code on both screens.
 - **Paired devices**: pair once with a code (works over the internet) or through Nearby, then send without tickets. Turn on **Auto-accept** for devices you trust.
 - **History**: a local log of sent and received transfers.

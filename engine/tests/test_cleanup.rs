@@ -8,7 +8,7 @@ use std::str::FromStr;
 fn receiver_temp_dir(ticket: &str) -> std::path::PathBuf {
     let parsed = iroh_blobs::ticket::BlobTicket::from_str(ticket).unwrap();
     native::storage::temp_dir().join(format!(
-        ".dashbeam-recv-{}",
+        ".dashbeam-lite-recv-{}",
         data_encoding::HEXLOWER.encode(parsed.hash().as_bytes())
     ))
 }

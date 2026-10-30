@@ -547,7 +547,7 @@ mod tests {
     const HASH_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
     fn partial_dir(root: &Path, hash: &str) -> PathBuf {
-        let dir = root.join(format!(".dashbeam-recv-{hash}"));
+        let dir = root.join(format!(".dashbeam-lite-recv-{hash}"));
         std::fs::create_dir_all(&dir).expect("create partial");
         dir
     }
@@ -578,15 +578,15 @@ mod tests {
 
     #[test]
     fn partial_store_hash_reads_a_well_formed_dir_name() {
-        let path = PathBuf::from(format!("/tmp/.dashbeam-recv-{HASH_A}"));
+        let path = PathBuf::from(format!("/tmp/.dashbeam-lite-recv-{HASH_A}"));
         assert_eq!(partial_store_hash(&path).as_deref(), Some(HASH_A));
     }
 
     #[test]
     fn partial_store_hash_rejects_a_foreign_dir_name() {
         assert!(partial_store_hash(Path::new("/tmp/important-documents")).is_none());
-        assert!(partial_store_hash(Path::new("/tmp/.dashbeam-recv-short")).is_none());
-        assert!(partial_store_hash(Path::new("/tmp/.dashbeam-send-abc")).is_none());
+        assert!(partial_store_hash(Path::new("/tmp/.dashbeam-lite-recv-short")).is_none());
+        assert!(partial_store_hash(Path::new("/tmp/.dashbeam-lite-send-abc")).is_none());
     }
 
     #[test]
@@ -635,7 +635,7 @@ mod tests {
         let temp = TempDir::new().expect("temp dir");
         let store = TransferHistoryStore::new(data.path());
         let surviving = partial_dir(temp.path(), HASH_A);
-        let swept = temp.path().join(format!(".dashbeam-recv-{HASH_B}"));
+        let swept = temp.path().join(format!(".dashbeam-lite-recv-{HASH_B}"));
 
         let kept = store.open(record("kept")).expect("open kept");
         let stale = store.open(record("stale")).expect("open stale");

@@ -7,10 +7,12 @@ use iroh_blobs::store::fs::FsStore;
 use rand::RngExt;
 use std::path::{Path, PathBuf};
 
-/// Directory name prefix of every send-side blob store.
-pub const SEND_DIR_PREFIX: &str = ".dashbeam-send-";
+/// Directory name prefix of every send-side blob store. App-specific, since
+/// each app sweeps its own prefix at launch and must not touch another
+/// DashBeam app's live transfers.
+pub const SEND_DIR_PREFIX: &str = ".dashbeam-lite-send-";
 /// Directory name prefix of every partial-receive blob store.
-pub const RECV_DIR_PREFIX: &str = ".dashbeam-recv-";
+pub const RECV_DIR_PREFIX: &str = ".dashbeam-lite-recv-";
 
 pub fn new_send_blobs_dir() -> PathBuf {
     let suffix = rand::rng().random::<[u8; 16]>();

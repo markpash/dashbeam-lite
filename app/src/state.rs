@@ -17,7 +17,6 @@ use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
 
 const PAIRING_TTL_SECS: u64 = 180;
-const MAX_QUEUED_INVITES: usize = 20;
 
 pub struct DashGlobal(pub Entity<Dash>);
 impl Global for DashGlobal {}
@@ -75,26 +74,23 @@ pub enum NodeState {
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum ShareStatus {
+    /// Hashing the files into the blob store.
+    Preparing,
     Waiting,
     Transferring,
     Done,
     Failed,
 }
 
-/// A share whose files are still being hashed into the blob store.
-pub struct Preparing {
-    tag: u64,
-    pub title: String,
-    pub progress: Progress,
-    started: std::time::Instant,
-    abort: tokio::task::AbortHandle,
-}
-
 pub struct Share {
-    tag: u64,
-    pub ticket: String,
-    pub meta: FileMetadata,
+    pub tag: u64,
+    pub title: String,
+    /// Known once the files are hashed.
+    pub meta: Option<FileMetadata>,
+    pub ticket: Option<String>,
     result: Option<SendResult>,
+    abort: Option<tokio::task::AbortHandle>,
+    started: std::time::Instant,
     pub status: ShareStatus,
     pub progress: Progress,
     peers: u32,
@@ -104,25 +100,36 @@ pub struct Share {
     pub invite: Option<(String, SharedString)>,
 }
 
-pub enum Receive {
-    Idle,
-    Running {
-        tag: u64,
-        name: Option<String>,
-        progress: Progress,
-        cancel: Option<tokio::sync::oneshot::Sender<()>>,
-        output_dir: PathBuf,
-        record: Option<String>,
-        file_names: Vec<String>,
-        conflicts: u32,
-        peer: Option<TransferPeer>,
-    },
-    Done {
-        name: String,
-        reveal: PathBuf,
-        conflicts: u32,
-    },
+impl Share {
+    pub fn active(&self) -> bool {
+        !matches!(self.status, ShareStatus::Done | ShareStatus::Failed)
+    }
+}
+
+#[derive(PartialEq)]
+pub enum DownloadStatus {
+    Running,
+    Done,
     Failed(String),
+}
+
+pub struct Download {
+    pub tag: u64,
+    ticket: String,
+    /// Content hash; two downloads of the same content would share a store.
+    hash: String,
+    sub_folder: Option<String>,
+    pub name: Option<String>,
+    pub status: DownloadStatus,
+    pub progress: Progress,
+    cancel: Option<tokio::sync::oneshot::Sender<()>>,
+    output_dir: PathBuf,
+    record: Option<String>,
+    file_names: Vec<String>,
+    pub conflicts: u32,
+    peer: Option<TransferPeer>,
+    /// What "Show in Finder" selects once done.
+    pub reveal: Option<PathBuf>,
 }
 
 #[derive(Clone)]
@@ -168,12 +175,13 @@ pub struct Dash {
     pub paired: Vec<PairedDeviceInfo>,
     pub nearby: Vec<NearbyDevice>,
     pub nearby_unavailable: Option<String>,
-    pub share: Option<Share>,
-    pub preparing: Option<Preparing>,
-    pub receive: Receive,
+    /// Newest first.
+    pub shares: Vec<Share>,
+    /// Newest first.
+    pub downloads: Vec<Download>,
+    /// Why the last pasted ticket didn't start.
+    pub ticket_error: Option<String>,
     pub invites: Vec<Invite>,
-    /// Trusted-device invites waiting for the current receive to finish.
-    queued: Vec<Invite>,
     pub pairing_code: Option<String>,
     /// Sender side of a nearby handshake: the device asked, and our own code.
     pub verifying: Option<(String, String)>,
@@ -233,11 +241,10 @@ impl Dash {
             paired: Vec::new(),
             nearby: Vec::new(),
             nearby_unavailable: None,
-            share: None,
-            preparing: None,
-            receive: Receive::Idle,
+            shares: Vec::new(),
+            downloads: Vec::new(),
+            ticket_error: None,
             invites: Vec::new(),
-            queued: Vec::new(),
             pairing_code: None,
             verifying: None,
             relay: None,
@@ -336,7 +343,7 @@ impl Dash {
     }
 
     pub fn shutdown(&mut self) {
-        if let Some(share) = self.share.take() {
+        for share in self.shares.drain(..) {
             if let Some(result) = share.result {
                 backend::block_on(backend::stop_share(result));
             }
@@ -400,16 +407,42 @@ impl Dash {
         }
     }
 
-    // Sending
+    // Transfers
 
+    /// True while anything is mid-transfer; network changes and updates wait.
     pub fn busy(&self) -> bool {
-        self.share.is_some()
-            || self.preparing.is_some()
-            || matches!(self.receive, Receive::Running { .. })
+        self.active_sends() > 0 || self.active_receives() > 0
     }
 
+    pub fn active_sends(&self) -> usize {
+        self.shares.iter().filter(|s| s.active()).count()
+    }
+
+    pub fn active_receives(&self) -> usize {
+        self.downloads
+            .iter()
+            .filter(|d| d.status == DownloadStatus::Running)
+            .count()
+    }
+
+    /// Refreshes everything that summarizes transfers outside the window.
+    fn transfers_changed(&self, cx: &mut Context<Self>) {
+        cx.defer(crate::tray::refresh);
+        cx.notify();
+    }
+
+    fn share_mut(&mut self, tag: u64) -> Option<&mut Share> {
+        self.shares.iter_mut().find(|s| s.tag == tag)
+    }
+
+    fn download_mut(&mut self, tag: u64) -> Option<&mut Download> {
+        self.downloads.iter_mut().find(|d| d.tag == tag)
+    }
+
+    // Sending
+
     pub fn start_share(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
-        if paths.is_empty() || self.busy() {
+        if paths.is_empty() {
             return;
         }
         let tag = self.tag();
@@ -423,82 +456,95 @@ impl Dash {
             self.network(),
             backend::handle(&self.events, tag),
         ));
-        self.preparing = Some(Preparing {
-            tag,
-            title: summarize(&names),
-            progress: Progress::default(),
-            started: std::time::Instant::now(),
-            abort,
-        });
-        cx.notify();
+        self.shares.insert(
+            0,
+            Share {
+                tag,
+                title: summarize(&names),
+                meta: None,
+                ticket: None,
+                result: None,
+                abort: Some(abort),
+                started: std::time::Instant::now(),
+                status: ShareStatus::Preparing,
+                progress: Progress::default(),
+                peers: 0,
+                record: None,
+                target: None,
+                invite: None,
+            },
+        );
+        self.transfers_changed(cx);
         cx.spawn(async move |this, cx| {
             let Some(result) = task.await else { return };
             this.update(cx, |this, cx| {
-                if this.preparing.as_ref().is_none_or(|p| p.tag != tag) {
+                let Some(share) = this.share_mut(tag) else {
                     // Cancelled just as it finished.
                     if let Ok((result, _)) = result {
                         backend::spawn(backend::stop_share(result));
                     }
                     return;
-                }
-                this.preparing = None;
+                };
                 match result {
                     Ok((result, meta)) => {
-                        this.share = Some(Share {
-                            tag,
-                            ticket: result.ticket.clone(),
-                            meta,
-                            result: Some(result),
-                            status: ShareStatus::Waiting,
-                            progress: Progress::default(),
-                            peers: 0,
-                            record: None,
-                            target: None,
-                            invite: None,
-                        });
+                        share.ticket = Some(result.ticket.clone());
+                        share.title = meta_title(&meta);
+                        share.meta = Some(meta);
+                        share.result = Some(result);
+                        share.abort = None;
+                        share.status = ShareStatus::Waiting;
                     }
-                    Err(error) => this.toast(error, cx),
+                    Err(error) => {
+                        this.shares.retain(|s| s.tag != tag);
+                        this.toast(error, cx);
+                    }
                 }
-                cx.notify();
+                this.transfers_changed(cx);
             })
             .ok();
         })
         .detach();
     }
 
-    /// Stops a share that is still hashing its files.
-    pub fn cancel_preparing(&mut self, cx: &mut Context<Self>) {
-        if let Some(preparing) = self.preparing.take() {
-            preparing.abort.abort();
-            cx.notify();
-        }
-    }
-
-    pub fn stop_share(&mut self, cx: &mut Context<Self>) {
-        let Some(mut share) = self.share.take() else {
+    /// Stops a share (cancelling it while it still prepares) and removes it.
+    pub fn stop_share(&mut self, tag: u64, cx: &mut Context<Self>) {
+        let Some(index) = self.shares.iter().position(|s| s.tag == tag) else {
             return;
         };
+        let mut share = self.shares.remove(index);
+        if let Some(abort) = share.abort.take() {
+            abort.abort();
+        }
         if let Some(id) = share.record.take() {
-            if share.status != ShareStatus::Done && share.status != ShareStatus::Failed {
+            if share.active() {
                 finish_record(&self.history, &id, TransferStatus::Cancelled, None, None);
             }
         }
         if let Some(result) = share.result.take() {
             backend::spawn(backend::stop_share(result));
         }
-        self.verifying = None;
-        cx.notify();
+        let target = share.invite.map(|(id, _)| id);
+        if self
+            .verifying
+            .as_ref()
+            .is_some_and(|(id, _)| Some(id) == target.as_ref())
+        {
+            self.verifying = None;
+        }
+        self.transfers_changed(cx);
     }
 
-    /// Offers the active share to a paired or nearby device.
-    pub fn send_to(&mut self, endpoint_id: String, cx: &mut Context<Self>) {
+    /// Offers a share to a paired or nearby device.
+    pub fn send_to(&mut self, tag: u64, endpoint_id: String, cx: &mut Context<Self>) {
         let peer = self.peer(&endpoint_id);
         let paired = self.paired_device(&endpoint_id).is_some();
-        let Some(share) = self.share.as_mut() else {
+        let Some(share) = self.share_mut(tag) else {
             return;
         };
-        let ticket = share.ticket.clone();
-        let (count, size) = (share.meta.item_count, share.meta.size);
+        let (Some(ticket), Some(meta)) = (share.ticket.clone(), share.meta.as_ref()) else {
+            return;
+        };
+        let (count, size) = (meta.item_count, meta.size);
         share.target = Some(peer);
         share.invite = Some((endpoint_id.clone(), "Sending…".into()));
         cx.notify();
@@ -513,7 +559,7 @@ impl Dash {
                 }
             },
             move |this, delivered, _cx| {
-                if let Some(share) = this.share.as_mut() {
+                if let Some(share) = this.share_mut(tag) {
                     share.invite = Some((
                         endpoint_id.clone(),
                         if delivered {
@@ -542,124 +588,171 @@ impl Dash {
 
     // Receiving
 
-    pub fn receive(&mut self, ticket: String, sub_folder: Option<String>, cx: &mut Context<Self>) {
+    /// Starts a download. `sender` names the peer for history when known from
+    /// an invite; tickets only carry a per-share key. Returns whether it
+    /// started.
+    pub fn receive(
+        &mut self,
+        ticket: String,
+        sub_folder: Option<String>,
+        sender: Option<TransferPeer>,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let ticket = ticket.trim().to_string();
         let ticket = ticket
             .split_once("ticket=")
             .map(|(_, t)| t.split('&').next().unwrap_or(t).to_string())
             .unwrap_or(ticket);
-        if ticket.is_empty() || self.busy() {
-            return;
+        if ticket.is_empty() {
+            return false;
         }
-        let parsed = ticket
-            .parse::<iroh_blobs::ticket::BlobTicket>()
-            .map_err(|e| e.to_string());
-        let ticket_obj = match parsed {
-            Ok(t) => t,
+        let parsed = match ticket.parse::<iroh_blobs::ticket::BlobTicket>() {
+            Ok(parsed) => parsed,
             Err(error) => {
-                self.receive = Receive::Failed(format!("Invalid ticket: {error}"));
+                self.ticket_error = Some(format!("Invalid ticket: {error}"));
                 cx.notify();
-                return;
+                return false;
             }
         };
-        let sender_id = ticket_obj.addr().id.to_string();
+        let hash = parsed.hash().to_hex().to_string();
+        if self
+            .downloads
+            .iter()
+            .any(|d| d.hash == hash && d.status == DownloadStatus::Running)
+        {
+            self.ticket_error = Some("That ticket is already downloading.".into());
+            cx.notify();
+            return false;
+        }
+        self.ticket_error = None;
+        let sender_id = parsed.addr().id.to_string();
         let mut output_dir = self.settings.download_dir();
-        if let Some(name) = sub_folder {
-            output_dir = output_dir.join(sanitize_folder_name(&name, &sender_id[..12]));
+        if let Some(name) = &sub_folder {
+            output_dir = output_dir.join(sanitize_folder_name(name, &sender_id[..12]));
         }
         let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
         let tag = self.tag();
-        self.receive = Receive::Running {
-            tag,
-            name: None,
-            progress: Progress::default(),
-            cancel: Some(cancel_tx),
-            output_dir: output_dir.clone(),
-            record: None,
-            file_names: Vec::new(),
-            conflicts: 0,
-            peer: Some(self.peer(&sender_id)),
-        };
         let task = backend::run(backend::receive(
-            ticket,
-            output_dir,
+            ticket.clone(),
+            output_dir.clone(),
             self.network(),
             backend::handle(&self.events, tag),
             cancel_rx,
         ));
+        self.downloads.insert(
+            0,
+            Download {
+                tag,
+                ticket,
+                hash,
+                sub_folder,
+                name: None,
+                status: DownloadStatus::Running,
+                progress: Progress::default(),
+                cancel: Some(cancel_tx),
+                output_dir,
+                record: None,
+                file_names: Vec::new(),
+                conflicts: 0,
+                peer: Some(sender.unwrap_or_else(|| self.peer(&sender_id))),
+                reveal: None,
+            },
+        );
         cx.spawn(async move |this, cx| {
             let result = task.await;
             this.update(cx, |this, cx| this.receive_finished(tag, result, cx))
         })
         .detach();
+        self.transfers_changed(cx);
+        true
+    }
+
+    pub fn cancel_download(&mut self, tag: u64, cx: &mut Context<Self>) {
+        if let Some(cancel) = self.download_mut(tag).and_then(|d| d.cancel.take()) {
+            let _ = cancel.send(());
+        }
         cx.notify();
     }
 
-    pub fn cancel_receive(&mut self, cx: &mut Context<Self>) {
-        if let Receive::Running { cancel, .. } = &mut self.receive {
-            if let Some(cancel) = cancel.take() {
-                let _ = cancel.send(());
+    pub fn dismiss_download(&mut self, tag: u64, cx: &mut Context<Self>) {
+        self.downloads
+            .retain(|d| d.tag != tag || d.status == DownloadStatus::Running);
+        cx.notify();
+    }
+
+    pub fn retry_download(&mut self, tag: u64, cx: &mut Context<Self>) {
+        let Some(index) = self
+            .downloads
+            .iter()
+            .position(|d| d.tag == tag && matches!(d.status, DownloadStatus::Failed(_)))
+        else {
+            return;
+        };
+        let old = self.downloads.remove(index);
+        self.receive(old.ticket, old.sub_folder, old.peer, cx);
+    }
+
+    /// Drops finished items from the Send (`sends`) or Receive list.
+    pub fn clear_finished(&mut self, sends: bool, cx: &mut Context<Self>) {
+        if sends {
+            let done: Vec<u64> = self
+                .shares
+                .iter()
+                .filter(|s| !s.active())
+                .map(|s| s.tag)
+                .collect();
+            for tag in done {
+                self.stop_share(tag, cx);
             }
         } else {
-            self.receive = Receive::Idle;
+            self.downloads
+                .retain(|d| d.status == DownloadStatus::Running);
         }
         cx.notify();
     }
 
     fn receive_finished(&mut self, tag: u64, result: Result<(), String>, cx: &mut Context<Self>) {
-        let Receive::Running {
-            tag: current,
-            name,
-            output_dir,
-            record,
-            file_names,
-            conflicts,
-            ..
-        } = &mut self.receive
-        else {
+        let history = self.history.clone();
+        let Some(download) = self.download_mut(tag) else {
             return;
         };
-        if *current != tag {
-            return;
-        }
-        let record = record.take();
+        let record = download.record.take();
+        download.cancel = None;
         match result {
             Ok(()) => {
-                let name = name.clone().unwrap_or_else(|| summarize(file_names));
-                let reveal = reveal_path(output_dir, file_names);
-                let conflicts = *conflicts;
+                let name = download
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| summarize(&download.file_names));
+                download.reveal = Some(reveal_path(&download.output_dir, &download.file_names));
+                download.name = Some(name.clone());
+                download.status = DownloadStatus::Done;
                 // Normally `receive-completed` closed the row already.
                 if let Some(id) = record {
-                    finish_record(&self.history, &id, TransferStatus::Completed, None, None);
+                    finish_record(&history, &id, TransferStatus::Completed, None, None);
                 }
                 cx.emit(Toast(format!("Received {name}").into()));
-                self.receive = Receive::Done {
-                    name,
-                    reveal,
-                    conflicts,
-                };
             }
             Err(error) if error == "cancelled" => {
                 if let Some(id) = record {
-                    finish_record(&self.history, &id, TransferStatus::Cancelled, None, None);
+                    finish_record(&history, &id, TransferStatus::Cancelled, None, None);
                 }
-                self.receive = Receive::Idle;
+                self.downloads.retain(|d| d.tag != tag);
             }
             Err(error) => {
                 if let Some(id) = record {
                     finish_record(
-                        &self.history,
+                        &history,
                         &id,
                         TransferStatus::Failed,
                         None,
                         Some(error.clone()),
                     );
                 }
-                self.receive = Receive::Failed(error);
+                download.status = DownloadStatus::Failed(error);
             }
         }
-        self.drain_queue(cx);
-        cx.notify();
+        self.transfers_changed(cx);
     }
 
     // Invites
@@ -694,33 +787,37 @@ impl Dash {
             ),
         }
         if let (true, Invite::Files { ticket, .. }) = (accept, invite) {
-            if self.busy() {
-                self.toast("Download already in progress", cx);
-            } else {
-                self.receive(ticket, None, cx);
-                self.note_sender(endpoint_id);
-            }
+            let sender = self.peer(endpoint_id);
+            self.receive(ticket, None, Some(sender), cx);
         }
         cx.notify();
-    }
-
-    /// Tickets carry a per-share key, so name the sender from the invite.
-    fn note_sender(&mut self, endpoint_id: &str) {
-        let sender = self.peer(endpoint_id);
-        if let Receive::Running { peer, .. } = &mut self.receive {
-            *peer = Some(sender);
-        }
     }
 
     fn on_invite(&mut self, invite: Invite, cx: &mut Context<Self>) {
         let trusted = self
             .paired_device(invite.endpoint_id())
-            .is_some_and(|d| d.trusted);
-        if trusted {
-            if self.queued.len() < MAX_QUEUED_INVITES {
-                self.queued.push(invite);
-            }
-            self.drain_queue(cx);
+            .filter(|d| d.trusted)
+            .map(|d| d.display_name.clone());
+        if let (
+            Some(folder),
+            Invite::Files {
+                endpoint_id,
+                ticket,
+                sender,
+                ..
+            },
+        ) = (trusted, &invite)
+        {
+            // Trusted devices skip the prompt and file under their own folder.
+            let id = endpoint_id.clone();
+            self.with_node(
+                cx,
+                move |node| async move { node.respond_paired_invite(&id, true).await },
+                |_, _, _| {},
+            );
+            self.toast(format!("Receiving from {sender}"), cx);
+            let peer = self.peer(endpoint_id);
+            self.receive(ticket.clone(), Some(folder), Some(peer), cx);
             return;
         }
         let (title, body) = match &invite {
@@ -756,34 +853,6 @@ impl Dash {
         self.invites
             .retain(|i| !i.endpoint_id().eq_ignore_ascii_case(invite.endpoint_id()));
         self.invites.push(invite);
-    }
-
-    fn drain_queue(&mut self, cx: &mut Context<Self>) {
-        if self.busy() || self.queued.is_empty() {
-            return;
-        }
-        let Invite::Files {
-            endpoint_id,
-            ticket,
-            sender,
-            ..
-        } = self.queued.remove(0)
-        else {
-            return;
-        };
-        let Some(device) = self.paired_device(&endpoint_id).filter(|d| d.trusted) else {
-            return self.drain_queue(cx);
-        };
-        let folder = device.display_name.clone();
-        let id = endpoint_id.clone();
-        self.with_node(
-            cx,
-            move |node| async move { node.respond_paired_invite(&id, true).await },
-            |_, _, _| {},
-        );
-        self.toast(format!("Receiving from {sender}"), cx);
-        self.receive(ticket, Some(folder), cx);
-        self.note_sender(&endpoint_id);
     }
 
     // Pairing
@@ -1096,16 +1165,25 @@ fn finish_record(
 impl Dash {
     fn on_event(&mut self, event: Event, cx: &mut Context<Self>) {
         let payload = event.payload.as_deref();
+        if matches!(
+            event.name.as_str(),
+            "transfer-completed" | "transfer-failed"
+        ) {
+            cx.defer(crate::tray::refresh);
+        }
         match event.name.as_str() {
             "import-progress" => {
                 let progress = Progress::parse(payload);
-                match (self.preparing.as_mut(), progress) {
-                    (Some(p), Some(mut progress)) if p.tag == event.tag => {
-                        let secs = p.started.elapsed().as_secs_f64();
+                let share = self
+                    .share_mut(event.tag)
+                    .filter(|s| s.status == ShareStatus::Preparing);
+                match (share, progress) {
+                    (Some(share), Some(mut progress)) => {
+                        let secs = share.started.elapsed().as_secs_f64();
                         if secs > 0.0 {
                             progress.speed_bps = progress.bytes as f64 / secs;
                         }
-                        p.progress = progress;
+                        share.progress = progress;
                     }
                     _ => return,
                 }
@@ -1164,7 +1242,12 @@ impl Dash {
                     } else {
                         format!("{name} declined")
                     };
-                    if let Some(share) = self.share.as_mut() {
+                    let offered = self.shares.iter_mut().find(|s| {
+                        s.invite
+                            .as_ref()
+                            .is_some_and(|(id, _)| id.eq_ignore_ascii_case(&r.endpoint_id))
+                    });
+                    if let Some(share) = offered {
                         share.invite = Some((r.endpoint_id, text.into()));
                     }
                 }
@@ -1210,21 +1293,21 @@ impl Dash {
         cx: &mut Context<Self>,
     ) {
         let history = &self.history;
-        let Some(share) = self.share.as_mut().filter(|s| s.tag == tag) else {
+        let Some(share) = self.shares.iter_mut().find(|s| s.tag == tag) else {
             return;
         };
         match name {
             "share-peer-connected" => share.peers += 1,
             "transfer-started" => {
                 share.status = ShareStatus::Transferring;
-                if share.record.is_none() {
+                if let (None, Some(meta)) = (&share.record, &share.meta) {
                     let mut record = TransferRecord::new(
                         TransferDirection::Send,
-                        share.meta.file_name.clone(),
-                        share.meta.size,
+                        meta.file_name.clone(),
+                        meta.size,
                     );
-                    record.item_count = share.meta.item_count;
-                    record.path_type = Some(match share.meta.mime_type.as_deref() {
+                    record.item_count = meta.item_count;
+                    record.path_type = Some(match meta.mime_type.as_deref() {
                         Some("inode/directory") => TransferPathType::Directory,
                         _ => TransferPathType::File,
                     });
@@ -1244,7 +1327,7 @@ impl Dash {
                     let _ = history.update(&id, |r| r.peer_count = peers);
                     finish_record(history, &id, TransferStatus::Completed, json(payload), None);
                 }
-                cx.emit(Toast(format!("Sent {}", share.meta.file_name).into()));
+                cx.emit(Toast(format!("Sent {}", share.title).into()));
             }
             "transfer-failed" => {
                 share.status = ShareStatus::Failed;
@@ -1258,8 +1341,7 @@ impl Dash {
 
     fn on_receive_event(&mut self, tag: u64, name: &str, payload: Option<&str>) {
         let history = &self.history;
-        let Receive::Running {
-            tag: current,
+        let Some(Download {
             name: file_name,
             progress,
             output_dir,
@@ -1268,13 +1350,13 @@ impl Dash {
             conflicts,
             peer,
             ..
-        } = &mut self.receive
+        }) = self
+            .downloads
+            .iter_mut()
+            .find(|d| d.tag == tag && d.status == DownloadStatus::Running)
         else {
             return;
         };
-        if *current != tag {
-            return;
-        }
         match name {
             "receive-file-metadata" => {
                 if let Some(meta) = json::<FileMetadata>(payload) {
@@ -1377,6 +1459,14 @@ struct PairRequest {
     remote_endpoint_id: String,
     sender_name: String,
     device_type: String,
+}
+
+/// "photo.jpg", or "photo.jpg and 3 more" for a multi-item share.
+fn meta_title(meta: &FileMetadata) -> String {
+    match meta.item_count.saturating_sub(1) {
+        0 => meta.file_name.clone(),
+        more => format!("{} and {more} more", meta.file_name),
+    }
 }
 
 fn top_level(file_names: &[String]) -> Vec<&str> {
