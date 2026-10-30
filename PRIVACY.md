@@ -1,6 +1,6 @@
 # Privacy Policy
 
-**Last Updated:** Aug 1 - 2026
+**Last Updated:** Oct 29 - 2026
 
 DashBeam is designed with privacy and security as core principles. This privacy policy explains how the application handles your data and what information may be visible to third parties.
 
@@ -53,6 +53,10 @@ DashBeam includes an **opt-in** debug mode to help diagnose bug reports. It is *
 - **Save diagnostics…** writes a single file for you to review. Sharing it with us is entirely your decision. We recommend opening and reading it first, as it contains the network and device details listed above
 
 ## Network Connections and Third-Party Services
+
+### Update Checks
+
+Builds published on GitHub check for updates a few seconds after launch and then every six hours, and when you press **Check for updates**. The check asks GitHub's API (`api.github.com`) for the latest release of this project, and an accepted update is downloaded from GitHub. These requests carry your IP address and a `DashBeam/<version>` user agent, like any web request, and nothing else about you or your transfers. Builds you compile yourself never check.
 
 ### Relay Servers
 
@@ -158,6 +162,7 @@ DashBeam uses the following third-party services:
 1. **Iroh Network Library**: Core P2P networking functionality ([Iroh Privacy](https://www.iroh.computer))
 2. **Default Relay Servers**: Operated by the Iroh project, used only when direct connections fail
 3. **DNS Discovery**: Used for peer discovery when necessary (default n0 path, or your configured DNS origin when the advanced real-DNS option is enabled)
+4. **GitHub**: Update checks and downloads ([GitHub Privacy Statement](https://docs.github.com/site-policy/privacy-policies/github-general-privacy-statement))
 
 You may review the privacy policies of these services if you have concerns.
 

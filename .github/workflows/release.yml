@@ -1,0 +1,67 @@
+name: Release
+
+# Every green CI run on main becomes release `build-<n>`, where n is the
+# number of commits on main. The in-app updater picks it up from the GitHub
+# releases API.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and publish
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: macos-latest
+    env:
+      SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.SHA }}
+          # Full history, so the commit count is right.
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Work out the build number
+        run: |
+          build=$(git rev-list --count HEAD)
+          echo "BUILD=$build" >> "$GITHUB_ENV"
+          # A re-run of an already published commit has nothing to do.
+          if gh release view "build-$build" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "build-$build is already published"
+            echo "PUBLISHED=1" >> "$GITHUB_ENV"
+          fi
+      - uses: Swatinem/rust-cache@v2
+        if: env.PUBLISHED != '1'
+      - name: Build DashBeam.app, dmg and zip
+        if: env.PUBLISHED != '1'
+        run: cargo xtask dmg --build "$BUILD"
+      - name: Publish release
+        if: env.PUBLISHED != '1'
+        run: |
+          # Runs can finish out of order; never let an older build become the
+          # "latest" release the updater reads.
+          latest=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName -q .tagName 2>/dev/null || true)
+          latest=${latest#build-}
+          is_latest=true
+          if [ -n "$latest" ] && [ "$latest" -gt "$BUILD" ] 2>/dev/null; then
+            is_latest=false
+          fi
+          gh release create "build-$BUILD" \
+            "target/release/DashBeam-$BUILD.dmg" \
+            "target/release/DashBeam-$BUILD.zip" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$SHA" \
+            --title "Build $BUILD" \
+            --latest="$is_latest" \
+            --generate-notes

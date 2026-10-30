@@ -45,7 +45,7 @@
           shellHook = ''
             echo "DashBeam dev shell: rustc $(rustc --version | cut -d' ' -f2)"
             echo "  cargo run                    run the app"
-            echo "  ./scripts/bundle-macos.sh    build DashBeam.app"
+            echo "  cargo xtask bundle           build DashBeam.app"
           '';
         };
       });

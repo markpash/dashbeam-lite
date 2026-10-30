@@ -24,18 +24,25 @@ This fork keeps DashBeam's transfer engine and protocol, so it works with the re
 - **Menu bar**: closing the window keeps DashBeam running in the menu bar. It can also start at login.
 - **Self-hosted relays and discovery**, configured in Settings.
 
-Left out on purpose: QR codes, broadcast mode, themes, the in-app updater, translations, debug-bundle export and thumbnails.
+Left out on purpose: QR codes, broadcast mode, themes, translations, debug-bundle export and thumbnails.
+
+## Install
+
+Every green build on `main` is published as a [release](https://github.com/markpash/dashbeam-lite/releases) named `build-<n>`, where n is the number of commits on `main`. Download the `.dmg` and drag DashBeam to Applications. From then on the app checks for new builds every few hours and offers to install them (Settings also has **Check for updates**).
+
+Builds are Apple Silicon only and signed ad hoc rather than notarized, so the first launch of a downloaded copy is blocked by Gatekeeper. Right-click the app and choose **Open**, or run `xattr -dr com.apple.quarantine /Applications/DashBeam.app`. Updates installed by the app itself aren't affected.
 
 ## Build
 
 Requires macOS 13+ and a stable Rust toolchain (pinned in `rust-toolchain.toml`).
 
 ```sh
-./scripts/bundle-macos.sh
+cargo xtask bundle            # target/release/DashBeam.app
+cargo xtask dmg --build 42    # also DashBeam-42.dmg and the updater's DashBeam-42.zip
 open target/release/DashBeam.app
 ```
 
-`cargo run` works for development, but system notifications only work from the app bundle. You can start sharing from a terminal with `DashBeam.app/Contents/MacOS/DashBeam <files…>`.
+Local builds have build number 0 and never update themselves. Set `SIGNING_IDENTITY` to sign with a real certificate instead of ad hoc. `cargo run` works for development, but system notifications only work from the app bundle. You can start sharing from a terminal with `DashBeam.app/Contents/MacOS/DashBeam <files…>`.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the development setup, and [docs/troubleshooting.md](docs/troubleshooting.md) if something doesn't connect.
 
@@ -46,6 +53,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the development setup, and [docs/trou
 | `app/` | The macOS app: gpui-kit UI, menu bar icon, settings, glue to the engine |
 | `engine/` | DashBeam's P2P transfer engine (`protocol` and `native` crates) |
 | `infra/` | Configs for self-hosting a relay and discovery server |
+| `xtask/` | `cargo xtask bundle` / `dmg`: app bundle, dmg and updater zip |
 
 ## Credits
 

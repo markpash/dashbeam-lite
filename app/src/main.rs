@@ -4,6 +4,7 @@ mod settings;
 mod state;
 mod tray;
 mod ui;
+mod updater;
 
 use gpui_kit::component::TitleBar;
 use gpui_kit::*;
@@ -18,6 +19,9 @@ fn main() {
                 .unwrap_or_else(|_| "info,iroh=warn,iroh_blobs=warn".into()),
         )
         .init();
+    // reqwest (the updater) uses whatever rustls provider is installed;
+    // ring is already in the build through iroh.
+    let _ = rustls::crypto::ring::default_provider().install_default();
 
     // Launch-at-login starts us with `--hidden`: tray only, no window.
     let hidden = std::env::args().any(|arg| arg == "--hidden");

@@ -3,6 +3,7 @@
 
 use crate::backend::{self, Event, Network};
 use crate::settings::Settings;
+use crate::updater;
 use engine::{
     sanitize_folder_name, short_fingerprint, unix_now_ms, DeviceInfo, Discoverability,
     FileMetadata, NearbyDevice, NodeService, PairedDeviceInfo, PairingStatus, RelayStatusResponse,
@@ -180,6 +181,13 @@ pub struct Dash {
     pub relay: Option<RelayStatusResponse>,
     pub connectivity: Option<ConnectivityReport>,
     pub connectivity_checking: bool,
+    pub update: Update,
+}
+
+pub enum Update {
+    None,
+    Available(updater::Release),
+    Installing(u64),
 }
 
 /// Result of the Connectivity tab's checks.
@@ -235,9 +243,11 @@ impl Dash {
             relay: None,
             connectivity: None,
             connectivity_checking: false,
+            update: Update::None,
         };
         this.start_node(cx);
         this.check_relay(cx);
+        this.schedule_update_checks(cx);
         this
     }
 
@@ -932,6 +942,89 @@ impl Dash {
                 this.connectivity_checking = false;
                 cx.notify();
             })
+        })
+        .detach();
+        cx.notify();
+    }
+
+    // Updates
+
+    fn schedule_update_checks(&self, cx: &mut Context<Self>) {
+        if !updater::enabled() {
+            return;
+        }
+        cx.spawn(async move |this, cx| loop {
+            cx.background_executor()
+                .timer(std::time::Duration::from_secs(10))
+                .await;
+            let found = backend::run(updater::check()).await;
+            if this
+                .update(cx, |this, cx| this.found_update(found, false, cx))
+                .is_err()
+            {
+                break;
+            }
+            cx.background_executor()
+                .timer(std::time::Duration::from_secs(6 * 60 * 60))
+                .await;
+        })
+        .detach();
+    }
+
+    pub fn check_for_update(&mut self, cx: &mut Context<Self>) {
+        let task = backend::run(updater::check());
+        cx.spawn(async move |this, cx| {
+            let found = task.await;
+            this.update(cx, |this, cx| this.found_update(found, true, cx))
+        })
+        .detach();
+    }
+
+    fn found_update(
+        &mut self,
+        found: Result<Option<updater::Release>, String>,
+        manual: bool,
+        cx: &mut Context<Self>,
+    ) {
+        match found {
+            Ok(Some(release)) if !matches!(self.update, Update::Installing(_)) => {
+                self.update = Update::Available(release);
+                cx.notify();
+            }
+            Ok(_) if manual => self.toast("You're on the latest build", cx),
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(%error, "update check failed");
+                if manual {
+                    self.toast(format!("Update check failed: {error}"), cx);
+                }
+            }
+        }
+    }
+
+    pub fn install_update(&mut self, cx: &mut Context<Self>) {
+        let Update::Available(release) = &self.update else {
+            return;
+        };
+        if self.busy() {
+            self.toast("Finish the current transfer first", cx);
+            return;
+        }
+        let release = release.clone();
+        self.update = Update::Installing(release.build);
+        let task = backend::run(updater::install(release.clone()));
+        cx.spawn(async move |this, cx| match task.await {
+            Ok(bundle) => {
+                updater::relaunch(&bundle);
+                cx.update(|cx| cx.quit());
+            }
+            Err(error) => {
+                let _ = this.update(cx, |this, cx| {
+                    this.update = Update::Available(release);
+                    this.toast(format!("Update failed: {error}"), cx);
+                    cx.notify();
+                });
+            }
         })
         .detach();
         cx.notify();

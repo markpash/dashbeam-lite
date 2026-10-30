@@ -1,7 +1,8 @@
 use crate::state::{
     format_size, items, Dash, DashGlobal, Invite, NodeState, Progress, Receive, ShareStatus, Toast,
+    Update,
 };
-use crate::{autostart, settings::Settings};
+use crate::{autostart, settings::Settings, updater};
 use engine::{
     Discoverability, DiscoveryConfigArg, PairingStatus, RelayConfigArg, TransferDirection,
 };
@@ -414,7 +415,9 @@ impl Shell {
 
     fn banners(&mut self, cx: &mut Context<Self>) -> Div {
         let dash = self.dash.read(cx);
-        let any = !dash.invites.is_empty() || dash.verifying.is_some();
+        let any = !dash.invites.is_empty()
+            || dash.verifying.is_some()
+            || !matches!(dash.update, Update::None);
         let mut banners = v_flex().gap_2().px_5().when(any, |b| b.pt_4());
         if let Some(invite) = dash.invites.first() {
             let id = invite.endpoint_id().to_string();
@@ -489,6 +492,46 @@ impl Shell {
                             })),
                     ),
             );
+        }
+        match &dash.update {
+            Update::None => {}
+            Update::Available(release) => {
+                let page = release.page_url.clone();
+                banners = banners.child(
+                    card(cx)
+                        .flex_row()
+                        .items_center()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .child(format!("DashBeam build {} is available.", release.build)),
+                        )
+                        .child(
+                            Button::new("whats-new")
+                                .ghost()
+                                .label("What's new")
+                                .on_click(move |_, _, cx| cx.open_url(&page)),
+                        )
+                        .child(
+                            Button::new("install-update")
+                                .primary()
+                                .label("Install and restart")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.dash.update(cx, |d, cx| d.install_update(cx))
+                                })),
+                        ),
+                );
+            }
+            Update::Installing(build) => {
+                banners = banners.child(
+                    card(cx)
+                        .flex_row()
+                        .items_center()
+                        .child(div().flex_1().child(format!("Installing build {build}…")))
+                        .child(Button::new("installing").label("Installing").loading(true)),
+                );
+            }
         }
         banners
     }
@@ -1338,11 +1381,26 @@ impl Shell {
             ),
         );
 
-        v_flex()
-            .gap_4()
-            .child(general)
-            .child(relay)
-            .child(muted(format!("DashBeam {}", env!("CARGO_PKG_VERSION")), cx))
+        v_flex().gap_4().child(general).child(relay).child(
+            row()
+                .child(div().flex_1().child(muted(
+                    match updater::BUILD {
+                        0 => format!("DashBeam {} (local build)", env!("CARGO_PKG_VERSION")),
+                        build => format!("DashBeam {} (build {build})", env!("CARGO_PKG_VERSION")),
+                    },
+                    cx,
+                )))
+                .when(updater::enabled(), |row| {
+                    row.child(
+                        Button::new("check-updates")
+                            .ghost()
+                            .label("Check for updates")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.dash.update(cx, |d, cx| d.check_for_update(cx))
+                            })),
+                    )
+                }),
+        )
     }
 }
 

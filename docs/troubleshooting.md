@@ -78,7 +78,7 @@ this device nearby** only controls whether others can see you.
 ## I don't get notifications
 
 System notifications (incoming files, finished transfers) only work when DashBeam runs
-as an app bundle, not via `cargo run`. Build one with `./scripts/bundle-macos.sh`, then
+as an app bundle, not via `cargo run`. Build one with `cargo xtask bundle`, then
 allow notifications for DashBeam in **System Settings → Notifications**.
 
 ---
