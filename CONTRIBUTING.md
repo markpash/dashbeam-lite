@@ -1,4 +1,4 @@
-# Contributing to DashBeam
+# Contributing to DashBeam Lite
 
 Thank you for your interest in contributing. This guide covers local setup and how to submit changes.
 
@@ -8,7 +8,7 @@ Thank you for your interest in contributing. This guide covers local setup and h
 
 ```bash
 cargo run                      # debug build of the app
-cargo xtask bundle             # release DashBeam.app (needed for system notifications)
+cargo xtask bundle             # release "DashBeam Lite.app" (needed for system notifications)
 cargo xtask dmg --build N      # also the .dmg and updater .zip, as CI publishes them
 ```
 
@@ -17,7 +17,7 @@ Useful while developing:
 - `RUST_LOG=debug cargo run` turns up logging (it goes to stderr).
 - `HOME=/tmp/peer-b cargo run` starts a second, fully separate instance (its own identity, settings and Downloads folder), so you can test sending, pairing and Nearby on one Mac.
 - `cargo run -- <files…>` starts sharing those files at launch.
-- To test the updater, run a numbered build from a bundle with `DASHBEAM_UPDATE_URL` pointing at a JSON file shaped like GitHub's `releases/latest` response.
+- To test the updater, run a numbered build from a bundle with `DASHBEAM_LITE_UPDATE_URL` pointing at a JSON file shaped like GitHub's `releases/latest` response.
 
 ### Project layout
 

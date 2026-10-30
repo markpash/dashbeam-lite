@@ -9,7 +9,7 @@ assignees: ''
 
 <!--
 Before filing, please check:
-https://github.com/tonyantony300/dashbeam/blob/main/docs/troubleshooting.md
+https://github.com/markpash/dashbeam-lite/blob/main/docs/troubleshooting.md
 It's organised by symptom and covers every platform.
 -->
 
@@ -25,7 +25,7 @@ Please describe what's happening and what you would have expected instead.
 
 ## Your environment
 
-- DashBeam version:
+- DashBeam Lite version (bottom of Settings):
 - macOS version (e.g. macOS 15.2):
 - Did it work in an earlier version? If so, which:
 
@@ -47,14 +47,14 @@ Logs make almost every report faster to resolve.
 For transfer, connection, relay or pairing problems, the easiest way is **Settings →
 General → Debug logging**, then restart, reproduce, and **Save diagnostics…**. If the app
 won't open or shows a blank window, use the `RUST_LOG` commands instead. Both are covered
-in [collecting logs](https://github.com/tonyantony300/dashbeam/blob/main/docs/troubleshooting.md#collecting-logs).
+in [collecting logs](https://github.com/markpash/dashbeam-lite/blob/main/docs/troubleshooting.md#collecting-logs).
 
 Please open the file and check it before attaching. It includes IP addresses, device
 identifiers, your device name, and names of files you shared.
 
 
 <details>
-<summary>dashbeam.log</summary>
+<summary>dashbeam-lite.log</summary>
 
 ```
 paste here

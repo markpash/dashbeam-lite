@@ -43,7 +43,7 @@ jobs:
           fi
       - uses: Swatinem/rust-cache@v2
         if: env.PUBLISHED != '1'
-      - name: Build DashBeam.app, dmg and zip
+      - name: Build DashBeam Lite.app, dmg and zip
         if: env.PUBLISHED != '1'
         run: cargo xtask dmg --build "$BUILD"
       - name: Publish release
@@ -58,10 +58,10 @@ jobs:
             is_latest=false
           fi
           gh release create "build-$BUILD" \
-            "target/release/DashBeam-$BUILD.dmg" \
-            "target/release/DashBeam-$BUILD.zip" \
+            "target/release/dashbeam-lite-$BUILD.dmg" \
+            "target/release/dashbeam-lite-$BUILD.zip" \
             --repo "$GITHUB_REPOSITORY" \
             --target "$SHA" \
-            --title "Build $BUILD" \
+            --title "DashBeam Lite build $BUILD" \
             --latest="$is_latest" \
             --generate-notes

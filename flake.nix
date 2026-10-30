@@ -1,5 +1,5 @@
 {
-  description = "DashBeam development shell (Rust + gpui-kit, macOS)";
+  description = "DashBeam Lite development shell (Rust + gpui-kit, macOS)";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -31,7 +31,7 @@
     {
       devShells = forAllSystems (pkgs: {
         default = pkgs.mkShell {
-          name = "dashbeam";
+          name = "dashbeam-lite";
           nativeBuildInputs = [
             (pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml).override {
               extensions = [
@@ -43,9 +43,9 @@
             }
           ];
           shellHook = ''
-            echo "DashBeam dev shell: rustc $(rustc --version | cut -d' ' -f2)"
+            echo "DashBeam Lite dev shell: rustc $(rustc --version | cut -d' ' -f2)"
             echo "  cargo run                    run the app"
-            echo "  cargo xtask bundle           build DashBeam.app"
+            echo "  cargo xtask bundle           build DashBeam Lite.app"
           '';
         };
       });

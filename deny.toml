@@ -1,4 +1,4 @@
-# cargo-deny config for DashBeam (AGPL-3.0-only).
+# cargo-deny config for DashBeam Lite (AGPL-3.0-only).
 # Docs: https://embarkstudios.github.io/cargo-deny/
 
 [graph]

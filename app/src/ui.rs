@@ -501,12 +501,10 @@ impl Shell {
                     card(cx)
                         .flex_row()
                         .items_center()
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .child(format!("DashBeam build {} is available.", release.build)),
-                        )
+                        .child(div().flex_1().min_w_0().child(format!(
+                            "DashBeam Lite build {} is available.",
+                            release.build
+                        )))
                         .child(
                             Button::new("whats-new")
                                 .ghost()
@@ -1304,7 +1302,7 @@ impl Shell {
             )
             .child(
                 Switch::new("autostart")
-                    .label("Start DashBeam when I sign in")
+                    .label("Start DashBeam Lite when I sign in")
                     .checked(autostart::is_enabled())
                     .on_click(cx.listener(|_, checked: &bool, window, cx| {
                         if let Err(error) = autostart::set(*checked) {
@@ -1385,8 +1383,11 @@ impl Shell {
             row()
                 .child(div().flex_1().child(muted(
                     match updater::BUILD {
-                        0 => format!("DashBeam {} (local build)", env!("CARGO_PKG_VERSION")),
-                        build => format!("DashBeam {} (build {build})", env!("CARGO_PKG_VERSION")),
+                        0 => format!("DashBeam Lite {} (local build)", env!("CARGO_PKG_VERSION")),
+                        build => format!(
+                            "DashBeam Lite {} (build {build})",
+                            env!("CARGO_PKG_VERSION")
+                        ),
                     },
                     cx,
                 )))

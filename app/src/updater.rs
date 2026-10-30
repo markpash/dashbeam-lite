@@ -1,5 +1,5 @@
 //! Self-update from GitHub releases. CI publishes every green build on main as
-//! release `build-<n>` with a zipped DashBeam.app; the app swaps its own bundle
+//! release `build-<n>` with a zipped app bundle; the app swaps its own bundle
 //! for a newer one and relaunches.
 
 use serde::Deserialize;
@@ -8,7 +8,7 @@ use std::process::Command;
 
 /// Build number baked in by `cargo xtask`; 0 for local builds, which never
 /// update themselves.
-pub const BUILD: u64 = match option_env!("DASHBEAM_BUILD") {
+pub const BUILD: u64 = match option_env!("DASHBEAM_LITE_BUILD") {
     Some(build) => parse(build),
     None => 0,
 };
@@ -60,7 +60,7 @@ pub fn enabled() -> bool {
 
 fn client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
-        .user_agent(concat!("DashBeam/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("DashBeam-Lite/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|e| e.to_string())
 }
@@ -68,7 +68,7 @@ fn client() -> Result<reqwest::Client, String> {
 /// The latest release, when it is newer than this build.
 pub async fn check() -> Result<Option<Release>, String> {
     // Overridable to test updates against a local server.
-    let url = std::env::var("DASHBEAM_UPDATE_URL").unwrap_or_else(|_| LATEST.into());
+    let url = std::env::var("DASHBEAM_LITE_UPDATE_URL").unwrap_or_else(|_| LATEST.into());
     let response = client()?
         .get(url)
         .header("Accept", "application/vnd.github+json")
@@ -122,8 +122,8 @@ pub async fn install(release: Release) -> Result<PathBuf, String> {
 /// replaces it, restoring the old one if the second rename fails.
 fn swap(bundle: &Path, zip: &[u8]) -> Result<(), String> {
     let parent = bundle.parent().ok_or("bundle has no parent folder")?;
-    let staging = parent.join(".DashBeam-update");
-    let old = parent.join(".DashBeam-old.app");
+    let staging = parent.join(".dashbeam-lite-update");
+    let old = parent.join(".dashbeam-lite-old.app");
     let _ = std::fs::remove_dir_all(&staging);
     let _ = std::fs::remove_dir_all(&old);
     std::fs::create_dir_all(&staging).map_err(|e| format!("{}: {e}", parent.display()))?;
@@ -140,10 +140,17 @@ fn swap(bundle: &Path, zip: &[u8]) -> Result<(), String> {
         if !status.success() {
             return Err("could not unpack the update".to_string());
         }
-        let new = staging.join("DashBeam.app");
-        if !new.join("Contents/MacOS/DashBeam").exists() {
-            return Err("the update does not contain DashBeam.app".into());
-        }
+        // Whatever the bundle is called in the archive, it lands under the
+        // name the user installed this copy as.
+        let new = std::fs::read_dir(&staging)
+            .map_err(|e| e.to_string())?
+            .flatten()
+            .map(|entry| entry.path())
+            .find(|path| {
+                path.extension().is_some_and(|ext| ext == "app")
+                    && path.join("Contents/Info.plist").exists()
+            })
+            .ok_or("the update does not contain an app")?;
         std::fs::rename(bundle, &old).map_err(|e| e.to_string())?;
         if let Err(error) = std::fs::rename(&new, bundle) {
             let _ = std::fs::rename(&old, bundle);

@@ -10,7 +10,10 @@ use gpui_kit::component::TitleBar;
 use gpui_kit::*;
 use state::{Dash, DashGlobal};
 
-actions!(dashbeam, [Open, Quit]);
+actions!(dashbeam_lite, [Open, Quit]);
+
+/// Bundle identifier; also names the data folder and the login item.
+pub const APP_ID: &str = "io.github.markpash.dashbeam-lite";
 
 fn main() {
     tracing_subscriber::fmt()
@@ -33,7 +36,7 @@ fn main() {
         .collect();
     let data_dir = dirs::data_dir()
         .expect("no Application Support directory")
-        .join("com.dashbeam.desktop");
+        .join(APP_ID);
     std::fs::create_dir_all(&data_dir).expect("cannot create data directory");
 
     let app = gpui_kit::application().with_assets(gpui_kit::assets::Assets);
@@ -51,7 +54,7 @@ fn main() {
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
         cx.set_menus(vec![
-            Menu::new("DashBeam").items([MenuItem::action("Quit DashBeam", Quit)])
+            Menu::new("DashBeam Lite").items([MenuItem::action("Quit DashBeam Lite", Quit)])
         ]);
         cx.on_system_notification_response(move |response, cx| {
             match (

@@ -1,7 +1,7 @@
-//! Release tasks: `cargo xtask bundle [--build N]` builds DashBeam.app,
+//! Release tasks: `cargo xtask bundle [--build N]` builds DashBeam Lite.app,
 //! `cargo xtask dmg [--build N]` also makes the .dmg and the updater's .zip.
 //!
-//! The build number is baked into the app (`DASHBEAM_BUILD`) and is what the
+//! The build number is baked into the app (`DASHBEAM_LITE_BUILD`) and is what the
 //! updater compares; 0 means a local build that never updates itself. Signs ad
 //! hoc unless `SIGNING_IDENTITY` is set.
 
@@ -9,6 +9,12 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 type Result<T = ()> = std::result::Result<T, String>;
+
+const NAME: &str = "DashBeam Lite";
+/// Crate, binary and release asset name.
+const SLUG: &str = "dashbeam-lite";
+/// Must match `APP_ID` in app/src/main.rs.
+const APP_ID: &str = "io.github.markpash.dashbeam-lite";
 
 fn main() {
     if let Err(error) = run() {
@@ -20,7 +26,7 @@ fn main() {
 fn run() -> Result {
     let mut args = std::env::args().skip(1);
     let task = args.next().unwrap_or_default();
-    let mut build = std::env::var("DASHBEAM_BUILD").unwrap_or_else(|_| "0".into());
+    let mut build = std::env::var("DASHBEAM_LITE_BUILD").unwrap_or_else(|_| "0".into());
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--build" => build = args.next().ok_or("--build needs a number")?,
@@ -51,19 +57,19 @@ fn run() -> Result {
 fn bundle(root: &Path, build: &str) -> Result<PathBuf> {
     let release = root.join("target/release");
     sh(Command::new("cargo")
-        .args(["build", "--release", "-p", "dashbeam"])
-        .env("DASHBEAM_BUILD", build)
+        .args(["build", "--release", "-p", SLUG])
+        .env("DASHBEAM_LITE_BUILD", build)
         .current_dir(root))?;
 
-    let app = release.join("DashBeam.app");
+    let app = release.join(format!("{NAME}.app"));
     let _ = std::fs::remove_dir_all(&app);
     let contents = app.join("Contents");
     std::fs::create_dir_all(contents.join("MacOS")).map_err(io)?;
     std::fs::create_dir_all(contents.join("Resources")).map_err(io)?;
-    std::fs::copy(release.join("dashbeam"), contents.join("MacOS/DashBeam")).map_err(io)?;
+    std::fs::copy(release.join(SLUG), contents.join("MacOS").join(SLUG)).map_err(io)?;
     std::fs::copy(
         root.join("app/assets/icon.icns"),
-        contents.join("Resources/DashBeam.icns"),
+        contents.join("Resources/AppIcon.icns"),
     )
     .map_err(io)?;
     std::fs::write(
@@ -87,7 +93,7 @@ fn bundle(root: &Path, build: &str) -> Result<PathBuf> {
     Ok(app)
 }
 
-/// Writes `DashBeam-<build>.dmg` for people and `DashBeam-<build>.zip` for the
+/// Writes `dashbeam-lite-<build>.dmg` for people and `dashbeam-lite-<build>.zip` for the
 /// in-app updater next to the bundle.
 fn dmg(root: &Path, app: &Path, build: &str) -> Result {
     let release = root.join("target/release");
@@ -96,15 +102,15 @@ fn dmg(root: &Path, app: &Path, build: &str) -> Result {
     std::fs::create_dir_all(&staging).map_err(io)?;
     sh(Command::new("ditto")
         .arg(app)
-        .arg(staging.join("DashBeam.app")))?;
+        .arg(staging.join(format!("{NAME}.app"))))?;
     std::os::unix::fs::symlink("/Applications", staging.join("Applications")).map_err(io)?;
 
-    let dmg = release.join(format!("DashBeam-{build}.dmg"));
+    let dmg = release.join(format!("{SLUG}-{build}.dmg"));
     sh(Command::new("hdiutil")
         .args([
             "create",
             "-volname",
-            "DashBeam",
+            NAME,
             "-format",
             "UDZO",
             "-ov",
@@ -114,7 +120,7 @@ fn dmg(root: &Path, app: &Path, build: &str) -> Result {
         .arg(&dmg))?;
     std::fs::remove_dir_all(&staging).map_err(io)?;
 
-    let zip = release.join(format!("DashBeam-{build}.zip"));
+    let zip = release.join(format!("{SLUG}-{build}.zip"));
     sh(Command::new("ditto")
         .args(["-c", "-k", "--keepParent"])
         .arg(app)
@@ -139,17 +145,17 @@ fn info_plist(version: &str, build: &str) -> String {
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleName</key><string>DashBeam</string>
-    <key>CFBundleDisplayName</key><string>DashBeam</string>
-    <key>CFBundleIdentifier</key><string>com.dashbeam.desktop</string>
-    <key>CFBundleExecutable</key><string>DashBeam</string>
-    <key>CFBundleIconFile</key><string>DashBeam</string>
+    <key>CFBundleName</key><string>{NAME}</string>
+    <key>CFBundleDisplayName</key><string>{NAME}</string>
+    <key>CFBundleIdentifier</key><string>{APP_ID}</string>
+    <key>CFBundleExecutable</key><string>{SLUG}</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>{version}</string>
     <key>CFBundleVersion</key><string>{build}</string>
     <key>LSMinimumSystemVersion</key><string>13.0</string>
     <key>NSHighResolutionCapable</key><true/>
-    <key>NSLocalNetworkUsageDescription</key><string>DashBeam finds nearby devices on your local network.</string>
+    <key>NSLocalNetworkUsageDescription</key><string>{NAME} finds nearby devices on your local network.</string>
     <key>NSBonjourServices</key><array><string>_irohv1._udp</string></array>
 </dict>
 </plist>

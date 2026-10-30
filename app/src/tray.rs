@@ -21,7 +21,7 @@ pub fn init(cx: &mut App) {
     };
     match Tray::builder()
         .icon(icon)
-        .tooltip("DashBeam")
+        .tooltip("DashBeam Lite")
         .menu(menu)
         .build(cx)
     {
@@ -55,7 +55,7 @@ fn menu(cx: &mut App) -> Vec<MenuItem> {
     vec![
         MenuItem::action(presence, NoAction).disabled(true),
         MenuItem::separator(),
-        MenuItem::action("Open DashBeam", Open),
+        MenuItem::action("Open DashBeam Lite", Open),
         MenuItem::action("Quit", Quit),
     ]
 }

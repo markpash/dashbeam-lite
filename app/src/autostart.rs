@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-const LABEL: &str = "com.dashbeam.desktop";
+use crate::APP_ID as LABEL;
 
 fn plist_path() -> Option<PathBuf> {
     Some(dirs::home_dir()?.join(format!("Library/LaunchAgents/{LABEL}.plist")))

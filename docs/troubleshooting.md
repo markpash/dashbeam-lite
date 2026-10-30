@@ -13,8 +13,8 @@
 ## I can't connect to the other device
 
 **The sender must keep the app open.** Files are served directly from the sending
-device; there's no copy on a server. If the sender quits DashBeam, sleeps their Mac, or
-loses network, the transfer can't proceed. Closing the window is fine: DashBeam keeps
+device; there's no copy on a server. If the sender quits DashBeam Lite, sleeps their Mac, or
+loses network, the transfer can't proceed. Closing the window is fine: DashBeam Lite keeps
 running in the menu bar.
 
 **Both sides need compatible relay settings** (**Settings → Relay servers**):
@@ -28,7 +28,7 @@ running in the menu bar.
 parse.
 
 **Restrictive networks.** Corporate, university, and guest Wi-Fi often block the
-peer-to-peer traffic DashBeam relies on. Try both devices on a different network.
+peer-to-peer traffic DashBeam Lite relies on. Try both devices on a different network.
 
 ---
 
@@ -54,7 +54,7 @@ still exists and is writable.
   [I can't connect](#i-cant-connect-to-the-other-device).
 
 Pairing codes expire after three minutes. Press **Show my pairing code** for a fresh one.
-Turn on **Start DashBeam when I sign in** so paired devices can see you without opening
+Turn on **Start DashBeam Lite when I sign in** so paired devices can see you without opening
 the window first.
 
 ---
@@ -64,8 +64,8 @@ the window first.
 Nearby uses [mDNS](https://en.wikipedia.org/wiki/Multicast_DNS) (Bonjour), which only
 works when devices can multicast to each other on the same subnet.
 
-- **macOS Local Network permission.** The first time DashBeam looks for nearby devices,
-  macOS asks for permission. If you declined, enable DashBeam under **System Settings →
+- **macOS Local Network permission.** The first time DashBeam Lite looks for nearby devices,
+  macOS asks for permission. If you declined, enable DashBeam Lite under **System Settings →
   Privacy & Security → Local Network**.
 - **Tunnel-all VPNs hide the LAN.** Disconnect, or split-tunnel local subnets.
 - **Guest and managed Wi-Fi often block peer-to-peer** and multicast.
@@ -77,18 +77,18 @@ this device nearby** only controls whether others can see you.
 
 ## I don't get notifications
 
-System notifications (incoming files, finished transfers) only work when DashBeam runs
+System notifications (incoming files, finished transfers) only work when DashBeam Lite runs
 as an app bundle, not via `cargo run`. Build one with `cargo xtask bundle`, then
-allow notifications for DashBeam in **System Settings → Notifications**.
+allow notifications for DashBeam Lite in **System Settings → Notifications**.
 
 ---
 
 ## Collecting logs
 
-DashBeam logs to standard error. Quit it from the menu bar icon first, then:
+DashBeam Lite logs to standard error. Quit it from the menu bar icon first, then:
 
 ```bash
-RUST_LOG=debug /Applications/DashBeam.app/Contents/MacOS/DashBeam 2>&1 | tee dashbeam.log
+RUST_LOG=debug "/Applications/DashBeam Lite.app/Contents/MacOS/dashbeam-lite" 2>&1 | tee dashbeam-lite.log
 ```
 
 Read the log before sharing it: it contains IP addresses, device identifiers, relay URLs,
@@ -98,6 +98,6 @@ your device name, and the names of files you shared.
 
 ## Reporting a bug
 
-Include the DashBeam version (shown at the bottom of Settings), your macOS version,
-whether it ever worked, `dashbeam.log`, and for transfer problems the other device's
+Include the DashBeam Lite version (shown at the bottom of Settings), your macOS version,
+whether it ever worked, `dashbeam-lite.log`, and for transfer problems the other device's
 platform and your relay settings.
