@@ -14,7 +14,7 @@ const NAME: &str = "DashBeam Lite";
 /// Crate, binary and release asset name.
 const SLUG: &str = "dashbeam-lite";
 /// Must match `APP_ID` in app/src/main.rs.
-const APP_ID: &str = "io.github.markpash.dashbeam-lite";
+const APP_ID: &str = "me.markpash.dashbeam-lite";
 
 fn main() {
     if let Err(error) = run() {

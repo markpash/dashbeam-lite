@@ -23,7 +23,7 @@ DashBeam Lite uses peer-to-peer (P2P) networking technology powered by [Iroh](ht
 
 DashBeam Lite stores the following data locally on your device:
 
-- **Secret Keys**: Your device's Iroh secret key is stored in `identity.key` (readable only by your user account) in the app data directory (`~/Library/Application Support/io.github.markpash.dashbeam-lite`), alongside public device metadata (display name, endpoint ID). During active transfers, temporary files are stored in your system's temp directory.
+- **Secret Keys**: Your device's Iroh secret key is stored in `identity.key` (readable only by your user account) in the app data directory (`~/Library/Application Support/me.markpash.dashbeam-lite`), alongside public device metadata (display name, endpoint ID). During active transfers, temporary files are stored in your system's temp directory.
 - **Paired devices**: When you pair devices, DashBeam Lite stores the remote device's endpoint ID and display name locally. Paired invites deliver the same one-time blob ticket as manual sharing; tickets are not reused across shares.
 - **Discoverability preference**: Whether this device advertises itself on the local network (Everyone / Paired only / Off), stored locally.
 - **App settings**: Preferences such as the download folder, discoverability, and relay and discovery servers remain on your device. Start at login is a standard macOS login item.

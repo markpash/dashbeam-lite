@@ -13,7 +13,7 @@ use state::{Dash, DashGlobal};
 actions!(dashbeam_lite, [Open, Quit]);
 
 /// Bundle identifier; also names the data folder and the login item.
-pub const APP_ID: &str = "io.github.markpash.dashbeam-lite";
+pub const APP_ID: &str = "me.markpash.dashbeam-lite";
 
 fn main() {
     tracing_subscriber::fmt()
