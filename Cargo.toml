@@ -10,3 +10,8 @@ lto = true
 debug = "none"
 strip = true
 panic = "abort"
+
+# Parallel outboard computation: makes preparing a large file ~13x faster.
+# Drop once it lands upstream.
+[patch.crates-io]
+iroh-blobs = { git = "https://github.com/markpash/iroh-blobs", rev = "f9658e428b953ae6f8162d8761d31963f9e60fc6" }

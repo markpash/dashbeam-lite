@@ -52,4 +52,7 @@ skip-tree = []
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = []
+allow-git = [
+    # iroh-blobs fork with parallel outboard computation (see Cargo.toml).
+    "https://github.com/markpash/iroh-blobs",
+]

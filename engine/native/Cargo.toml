@@ -30,4 +30,5 @@ walkdir = "2.4.0"
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
+blake3 = "1.8.3"
 tempfile = "3.8.1"
