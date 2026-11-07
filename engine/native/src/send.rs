@@ -3,11 +3,12 @@ use std::path::PathBuf;
 use iroh::endpoint::presets;
 use iroh::{address_lookup::pkarr::PkarrPublisher, endpoint::RelayMode, Endpoint};
 use iroh_blobs::{
-    provider::events::{ConnectMode, EventMask, EventSender, RequestMode},
+    provider::events::{ConnectMode, EventMask, EventSender, RequestMode, ThrottleMode},
     BlobsProtocol,
 };
 use protocol::{
-    run_share_session, AppHandle, DiscoveryModeOption, FileMetadata, SendOptions, METADATA_ALPN,
+    run_share_session, AppHandle, DiscoveryModeOption, FileMetadata, PauseGate, SendOptions,
+    METADATA_ALPN,
 };
 use tokio::sync::mpsc;
 
@@ -101,11 +102,14 @@ pub async fn start_share_items(
                 EventMask {
                     connected: ConnectMode::Notify,
                     get: RequestMode::NotifyLog,
+                    // Lets `SendResult::pause` hold the data back.
+                    throttle: ThrottleMode::Intercept,
                     ..EventMask::DEFAULT
                 },
             )),
         );
 
+        let pause = PauseGate::new();
         let (temp_tag, size, _collection) =
             crate::import::import_paths(canonical_paths, blobs.store(), &app_handle_clone).await?;
 
@@ -122,6 +126,7 @@ pub async fn start_share_items(
             relay_mode,
             Some(blobs_data_dir2),
             progress_rx,
+            pause.clone(),
         )
         .await
         .map(|outcome| {
@@ -139,6 +144,7 @@ pub async fn start_share_items(
                 _progress_handle: outcome.progress_handle,
                 _store: outcome.store,
                 completed_peers: outcome.completed_peers,
+                pause,
             }
         })
     };

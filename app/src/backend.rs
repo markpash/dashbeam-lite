@@ -181,6 +181,15 @@ pub async fn receive(
         .map_err(|e| e.to_string())
 }
 
+/// Deletes the partial store of a download that won't be resumed.
+pub fn discard_partial(hash: &str) {
+    let dir =
+        engine::storage::temp_dir().join(format!("{}{hash}", engine::storage::RECV_DIR_PREFIX));
+    spawn(async move {
+        let _ = tokio::fs::remove_dir_all(dir).await;
+    });
+}
+
 /// Clears blob stores a crash or cancel left in the temp dir.
 pub fn cleanup_orphaned_stores() {
     let Ok(entries) = std::fs::read_dir(engine::storage::temp_dir()) else {

@@ -53,6 +53,8 @@ pub struct SendResult {
     pub _store: iroh_blobs::store::fs::FsStore,
     pub blobs_data_dir: AutoCleanupDir,
     pub completed_peers: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// Holds the share's outgoing data while paused, without dropping peers.
+    pub pause: protocol::PauseGate,
 }
 
 impl SendResult {

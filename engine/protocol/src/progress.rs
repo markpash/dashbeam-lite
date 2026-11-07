@@ -143,6 +143,8 @@ pub struct ProgressSnapshot {
 pub struct ShareProgress {
     share_size: u64,
     active: HashMap<(u64, u64), RequestProgress>,
+    /// Interrupted requests by peer, waiting for that peer to reconnect.
+    parked: HashMap<[u8; 32], RequestProgress>,
     finished_bytes: u64,
     finished_requests: u64,
 }
@@ -152,6 +154,7 @@ impl ShareProgress {
         Self {
             share_size,
             active: HashMap::new(),
+            parked: HashMap::new(),
             finished_bytes: 0,
             finished_requests: 0,
         }
@@ -183,6 +186,33 @@ impl ShareProgress {
             self.finished_requests += 1;
         }
         bytes
+    }
+
+    /// Set aside an interrupted request, out of the totals like an abandoned
+    /// one, until `peer` reconnects. Returns its bytes.
+    pub fn park(&mut self, key: (u64, u64), peer: [u8; 32]) -> u64 {
+        let Some(request) = self.active.remove(&key) else {
+            return 0;
+        };
+        let bytes = request.payload_bytes().min(self.share_size);
+        self.parked.insert(peer, request);
+        bytes
+    }
+
+    /// Start `key` from what `peer` already received on an earlier, parked
+    /// request. A resumed request only asks for what is missing, so on its
+    /// own it would look like a peer that stopped far short.
+    pub fn unpark(&mut self, key: (u64, u64), peer: [u8; 32]) {
+        if let Some(earlier) = self.parked.remove(&peer) {
+            let request = self.active.entry(key).or_default();
+            for (index, end) in earlier.ends {
+                let entry = request.ends.entry(index).or_insert(0);
+                *entry = (*entry).max(end);
+            }
+            for (index, size) in earlier.sizes {
+                request.sizes.entry(index).or_insert(size);
+            }
+        }
     }
 
     pub fn request_bytes(&self, key: (u64, u64)) -> u64 {
@@ -532,6 +562,41 @@ mod tests {
                 total: 1000
             }
         );
+    }
+
+    #[test]
+    fn share_progress_resumed_request_keeps_what_the_peer_already_has() {
+        let mut share = ShareProgress::new(1000);
+        let peer = [7; 32];
+        share.blob_started((1, 1), FIRST_PAYLOAD_BLOB_INDEX, 1000);
+        share.blob_progress((1, 1), 600);
+        assert_eq!(share.park((1, 1), peer), 600);
+        assert_eq!(share.snapshot(), ProgressSnapshot { bytes: 0, total: 0 });
+
+        // The reconnected peer only asks for the rest of the blob.
+        share.unpark((2, 1), peer);
+        share.blob_started((2, 1), FIRST_PAYLOAD_BLOB_INDEX, 1000);
+        assert_eq!(share.request_bytes((2, 1)), 600);
+        share.blob_progress((2, 1), 1000);
+        assert_eq!(share.request_bytes((2, 1)), 1000);
+        assert_eq!(share.retire((2, 1), true), 1000);
+        assert_eq!(
+            share.snapshot(),
+            ProgressSnapshot {
+                bytes: 1000,
+                total: 1000
+            }
+        );
+    }
+
+    #[test]
+    fn share_progress_unpark_ignores_peers_with_nothing_parked() {
+        let mut share = ShareProgress::new(1000);
+        share.unpark((1, 1), [1; 32]);
+        assert_eq!(share.request_bytes((1, 1)), 0);
+        share.park((1, 1), [1; 32]);
+        share.unpark((2, 1), [2; 32]);
+        assert_eq!(share.request_bytes((2, 1)), 0);
     }
 
     #[test]

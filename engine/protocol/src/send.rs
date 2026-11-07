@@ -14,7 +14,7 @@ use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 // To avoid encoding thumbnail into ticket causing excessively long tickets, we use a custom metadata protocol to
 // send metadata seprately from the file data. After the receive end sticks the ticket, a seprate connection will
@@ -151,6 +151,39 @@ fn emit_active_connection_count(app_handle: &AppHandle, count: usize) {
     }
 }
 
+/// Pauses a share's outgoing data. Each chunk the provider sends waits for the
+/// gate, so pausing stalls every transfer of the share without closing its
+/// connections, which QUIC keep-alives hold open meanwhile. Only takes effect
+/// when the blobs protocol was built with `ThrottleMode::Intercept`.
+#[derive(Clone, Debug)]
+pub struct PauseGate(Arc<watch::Sender<bool>>);
+
+impl Default for PauseGate {
+    fn default() -> Self {
+        Self(Arc::new(watch::Sender::new(false)))
+    }
+}
+
+impl PauseGate {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn set_paused(&self, paused: bool) {
+        self.0.send_replace(paused);
+    }
+
+    pub fn is_paused(&self) -> bool {
+        *self.0.borrow()
+    }
+
+    /// Waits until the gate opens. Resolves early once every `PauseGate`
+    /// clone is gone, so a waiter never outlives its share.
+    async fn opened(mut rx: watch::Receiver<bool>) {
+        let _ = rx.wait_for(|paused| !paused).await;
+    }
+}
+
 /// Shared send orchestration after blobs are imported into the store.
 pub struct ShareSessionOutcome<S> {
     pub ticket: String,
@@ -181,6 +214,7 @@ pub async fn run_share_session<S>(
     relay_mode: RelayMode,
     cleanup_dir: Option<PathBuf>,
     progress_rx: mpsc::Receiver<ProviderMessage>,
+    pause: PauseGate,
 ) -> anyhow::Result<ShareSessionOutcome<S>>
 where
     S: Send + Sync + 'static,
@@ -191,6 +225,7 @@ where
         app_handle.clone(),
         size,
         completed_peers.clone(),
+        pause,
     ));
 
     let router = iroh::protocol::Router::builder(endpoint)
@@ -238,6 +273,7 @@ pub async fn run_share_on_endpoint(
     relay_mode: RelayMode,
     cleanup_dir: Option<PathBuf>,
     progress_rx: mpsc::Receiver<ProviderMessage>,
+    pause: PauseGate,
 ) -> anyhow::Result<ShareSessionOutcome<()>> {
     let completed_peers = Arc::new(AtomicUsize::new(0));
     let progress_handle = n0_future::task::spawn(show_provide_progress_with_logging(
@@ -245,6 +281,7 @@ pub async fn run_share_on_endpoint(
         app_handle.clone(),
         size,
         completed_peers.clone(),
+        pause,
     ));
 
     timeout(Duration::from_secs(30), async move {
@@ -361,6 +398,7 @@ async fn show_provide_progress_with_logging(
     app_handle: AppHandle,
     total_collection_size: u64,
     completed_requests: Arc<AtomicUsize>,
+    pause: PauseGate,
 ) -> anyhow::Result<()> {
     use n0_future::FuturesUnordered;
     use std::sync::atomic::Ordering;
@@ -368,6 +406,8 @@ async fn show_provide_progress_with_logging(
     use tokio::sync::Mutex;
 
     let mut tasks = FuturesUnordered::new();
+    // Who is on each connection, so a peer that reconnects resumes its tally.
+    let mut peers: std::collections::HashMap<u64, [u8; 32]> = Default::default();
 
     let session: Arc<Mutex<SessionProgress>> =
         Arc::new(Mutex::new(SessionProgress::new(total_collection_size)));
@@ -387,8 +427,20 @@ async fn show_provide_progress_with_logging(
                 };
 
                 match item {
+                    iroh_blobs::provider::events::ProviderMessage::Throttle(msg) => {
+                        if pause.is_paused() {
+                            let opened = PauseGate::opened(pause.0.subscribe());
+                            n0_future::task::spawn(async move {
+                                opened.await;
+                                msg.tx.send(Ok(())).await.ok();
+                            });
+                        } else {
+                            msg.tx.send(Ok(())).await.ok();
+                        }
+                    }
                     iroh_blobs::provider::events::ProviderMessage::ClientConnectedNotify(msg) => {
                         if let Some(endpoint_id) = msg.endpoint_id {
+                            peers.insert(msg.connection_id, *endpoint_id.as_bytes());
                             let payload = serde_json::json!({
                                 "endpoint_id": endpoint_id.to_string(),
                             });
@@ -400,7 +452,8 @@ async fn show_provide_progress_with_logging(
                             }
                         }
                     }
-                    iroh_blobs::provider::events::ProviderMessage::ConnectionClosed(_msg) => {
+                    iroh_blobs::provider::events::ProviderMessage::ConnectionClosed(msg) => {
+                        peers.remove(&msg.connection_id);
                     }
                     iroh_blobs::provider::events::ProviderMessage::GetRequestReceivedNotify(msg) => {
                         let is_sizes_probe_request = is_sizes_probe_request(&msg.request.ranges);
@@ -409,8 +462,12 @@ async fn show_provide_progress_with_logging(
                         let request_id = msg.request_id;
                         let key = (connection_id, request_id);
 
+                        let peer = peers.get(&connection_id).copied();
                         if !is_sizes_probe_request {
                             active_requests.fetch_add(1, Ordering::SeqCst);
+                            if let Some(peer) = peer {
+                                session.lock().await.ledger.unpark(key, peer);
+                            }
 
                             let mut last_time = last_request_time.lock().await;
                             *last_time = Some(Instant::now());
@@ -571,7 +628,15 @@ async fn show_provide_progress_with_logging(
                                                     bytes_sent,
                                                     total_collection_size_task,
                                                 );
-                                                session.ledger.retire(key, credited);
+                                                // An unfinished peer may reconnect and resume.
+                                                match peer {
+                                                    Some(peer) if !credited => {
+                                                        session.ledger.park(key, peer);
+                                                    }
+                                                    _ => {
+                                                        session.ledger.retire(key, credited);
+                                                    }
+                                                }
                                                 session.ledger.active_requests()
                                             };
 
@@ -598,7 +663,14 @@ async fn show_provide_progress_with_logging(
                                         bytes_sent,
                                         total_collection_size_task,
                                     );
-                                    session.ledger.retire(key, credited);
+                                    match peer {
+                                        Some(peer) if !credited => {
+                                            session.ledger.park(key, peer);
+                                        }
+                                        _ => {
+                                            session.ledger.retire(key, credited);
+                                        }
+                                    }
                                     bytes_sent
                                 };
 

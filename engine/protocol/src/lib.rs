@@ -41,7 +41,8 @@ pub use relay::{
     verify_relays, RelayConfigArg, RelayFallbackPolicy, RelayStatusResponse, VerifyRelaysResponse,
 };
 pub use send::{
-    run_share_on_endpoint, run_share_session, MetadataProtocol, ShareSessionOutcome, METADATA_ALPN,
+    run_share_on_endpoint, run_share_session, MetadataProtocol, PauseGate, ShareSessionOutcome,
+    METADATA_ALPN,
 };
 pub use tls_config::{uses_custom_infra, with_system_ca_if_custom};
 pub use types::*;

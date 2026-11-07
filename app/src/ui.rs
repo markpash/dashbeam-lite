@@ -371,17 +371,24 @@ fn row() -> Div {
     h_flex().gap_2().items_center()
 }
 
-fn progress_line(id: impl Into<ElementId>, p: &Progress, cx: &App) -> Div {
+/// A progress bar with sizes, then `note` if given, else speed and time left.
+fn progress_line(id: impl Into<ElementId>, p: &Progress, note: Option<&str>, cx: &App) -> Div {
+    let detail = match note {
+        Some(note) => note.to_string(),
+        None => format!(
+            "{}/s{}",
+            format_size(p.speed_bps as u64),
+            p.eta().map(|eta| format!(" · {eta}")).unwrap_or_default()
+        ),
+    };
     v_flex()
         .gap_1()
         .child(ProgressBar::new(id).value(p.fraction() * 100.0))
         .child(muted(
             format!(
-                "{} of {} · {}/s{}",
+                "{} of {} · {detail}",
                 format_size(p.bytes),
-                format_size(p.total),
-                format_size(p.speed_bps as u64),
-                p.eta().map(|eta| format!(" · {eta}")).unwrap_or_default()
+                format_size(p.total)
             ),
             cx,
         ))
@@ -649,10 +656,11 @@ impl Shell {
         let id = tag as usize;
         let status = match share.status {
             ShareStatus::Preparing => "Preparing transfer…",
+            _ if share.paused && share.active() => "Paused",
             ShareStatus::Waiting => "Waiting for a receiver",
             ShareStatus::Transferring => "Sending…",
             ShareStatus::Done => "Sent",
-            ShareStatus::Failed => "Transfer failed",
+            ShareStatus::Interrupted => "Receiver disconnected, waiting for it to reconnect",
         };
         let summary = match &share.meta {
             Some(meta) => format!("{} · {status}", format_size(meta.size)),
@@ -663,11 +671,12 @@ impl Shell {
             .child(muted(summary, cx));
         let show_progress = match share.status {
             ShareStatus::Preparing => share.progress.total > 0,
-            ShareStatus::Transferring => true,
+            ShareStatus::Transferring | ShareStatus::Interrupted => true,
             _ => false,
         };
         if show_progress {
-            card = card.child(progress_line(("progress", id), &share.progress, cx));
+            let note = share.paused.then_some("Paused");
+            card = card.child(progress_line(("progress", id), &share.progress, note, cx));
         }
         if let (ShareStatus::Waiting, Some(ticket)) = (share.status, share.ticket.clone()) {
             card = card.child(
@@ -719,9 +728,20 @@ impl Shell {
                     }),
             );
         }
+        if share.can_pause() && (share.paused || share.status == ShareStatus::Transferring) {
+            let paused = share.paused;
+            actions = actions.child(
+                Button::new(("pause-share", id))
+                    .label(if paused { "Resume" } else { "Pause" })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.dash
+                            .update(cx, |d, cx| d.pause_share(tag, !paused, cx))
+                    })),
+            );
+        }
         let stop_label = match share.status {
             ShareStatus::Preparing => "Cancel",
-            ShareStatus::Done | ShareStatus::Failed => "Dismiss",
+            ShareStatus::Done => "Dismiss",
             _ => "Stop sharing",
         };
         actions = actions.child(Button::new(("stop", id)).label(stop_label).on_click(
@@ -748,11 +768,7 @@ impl Shell {
                         cx.listener(|this, _, window, cx| this.submit_ticket(window, cx)),
                     )),
             );
-        let finished = dash
-            .downloads
-            .iter()
-            .filter(|d| d.status != DownloadStatus::Running)
-            .count();
+        let finished = dash.downloads.iter().filter(|d| d.finished()).count();
         let mut page = v_flex()
             .gap_4()
             .child(list_header("Receive", finished, false, cx))
@@ -773,26 +789,60 @@ impl Shell {
                 this.dash.update(cx, |d, cx| d.dismiss_download(tag, cx))
             }));
         match &download.status {
-            DownloadStatus::Running => card(cx)
-                .child(
-                    div().child(match (&download.name, download.progress.total) {
-                        (Some(name), _) => name.clone(),
-                        (None, 0) => "Connecting to sender…".into(),
-                        (None, _) => "Downloading…".into(),
-                    }),
-                )
-                .when(download.progress.total > 0, |card| {
-                    card.child(progress_line(("progress", id), &download.progress, cx))
-                })
-                .child(
-                    row().justify_end().child(
-                        Button::new(("cancel", id))
-                            .label("Cancel")
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.dash.update(cx, |d, cx| d.cancel_download(tag, cx))
-                            })),
-                    ),
-                ),
+            DownloadStatus::Running | DownloadStatus::Paused => {
+                let paused = download.status == DownloadStatus::Paused;
+                let note = if paused {
+                    Some("Paused")
+                } else if download.reconnecting {
+                    Some("Connection lost, reconnecting…")
+                } else {
+                    None
+                };
+                let toggle = (paused || download.can_pause()).then(|| {
+                    Button::new(("pause", id))
+                        .label(if paused { "Resume" } else { "Pause" })
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.dash.update(cx, |d, cx| {
+                                if paused {
+                                    d.resume_download(tag, cx)
+                                } else {
+                                    d.pause_download(tag, cx)
+                                }
+                            })
+                        }))
+                });
+                card(cx)
+                    .child(
+                        div().child(match (&download.name, download.progress.total) {
+                            (Some(name), _) => name.clone(),
+                            (None, 0) if paused => "Paused".into(),
+                            (None, 0) => "Connecting to sender…".into(),
+                            (None, _) => "Downloading…".into(),
+                        }),
+                    )
+                    .when(download.progress.total > 0, |card| {
+                        card.child(progress_line(
+                            ("progress", id),
+                            &download.progress,
+                            note,
+                            cx,
+                        ))
+                    })
+                    .when(
+                        download.progress.total == 0 && download.reconnecting,
+                        |card| card.child(muted("Connection lost, reconnecting…", cx)),
+                    )
+                    .child(
+                        row()
+                            .justify_end()
+                            .child(Button::new(("cancel", id)).label("Cancel").on_click(
+                                cx.listener(move |this, _, _, cx| {
+                                    this.dash.update(cx, |d, cx| d.cancel_download(tag, cx))
+                                }),
+                            ))
+                            .children(toggle),
+                    )
+            }
             DownloadStatus::Done => {
                 let reveal = download.reveal.clone();
                 card(cx)

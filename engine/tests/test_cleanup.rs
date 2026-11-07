@@ -289,7 +289,7 @@ async fn e2e_receiver_resumes_partial_download() {
 
     // Receive in the background and watch progress so we can cut the sender mid-transfer.
     let emitter = MockEventEmitter::new();
-    let (_cancel_tx, cancel_rx) = common::no_cancel();
+    let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
     let recv_task = tokio::spawn(download(
         ticket.clone(),
         ReceiveOptions {
@@ -317,11 +317,26 @@ async fn e2e_receiver_resumes_partial_download() {
         "transfer finished before it could be interrupted; rerun with a larger file"
     );
 
-    // Kill the sender mid-transfer -> the receiver's connection breaks.
+    // Kill the sender mid-transfer -> the receiver's connection breaks and it
+    // starts trying to reconnect, which can't work: the share is gone. A
+    // sender that vanishes without closing is only noticed once QUIC's idle
+    // timeout (30 s) passes.
     drop(share);
+    for _ in 0..1200 {
+        if emitter.has_event("receive-reconnecting") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(
+        emitter.has_event("receive-reconnecting"),
+        "receiver should try to reconnect"
+    );
 
+    // Give up the way Pause does.
+    cancel_tx.send(()).unwrap();
     let first = recv_task.await.expect("receive task panicked");
-    assert!(first.is_err(), "interrupted attempt should fail");
+    assert!(first.is_err(), "interrupted attempt should stop");
 
     // Partial progress survived on disk.
     assert!(
@@ -347,6 +362,7 @@ async fn e2e_receiver_resumes_partial_download() {
     );
 
     // Retry completes by resuming from the saved progress.
+    let emitter2 = MockEventEmitter::new();
     let (_cancel_tx2, cancel_rx2) = common::no_cancel();
     download(
         share2.ticket.clone(),
@@ -354,11 +370,23 @@ async fn e2e_receiver_resumes_partial_download() {
             output_dir: Some(recv_dir.clone()),
             ..Default::default()
         },
-        None,
+        Some(emitter2.clone()),
         cancel_rx2,
     )
     .await
     .expect("retry should resume and complete");
+
+    // Progress counts what the first attempt saved, rather than starting at 0.
+    let first_progress = emitter2
+        .events_with_name("receive-progress")
+        .into_iter()
+        .find_map(|e| e.payload)
+        .and_then(|p| p.split(':').next().and_then(|s| s.parse::<u64>().ok()))
+        .unwrap_or(0);
+    assert!(
+        first_progress > 0,
+        "resumed progress should start from the saved bytes"
+    );
 
     // Final file is correct and the temp store is cleaned up on success.
     let received = std::fs::metadata(recv_dir.join("big.bin")).unwrap().len();

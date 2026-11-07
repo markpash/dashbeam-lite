@@ -79,7 +79,9 @@ pub enum ShareStatus {
     Waiting,
     Transferring,
     Done,
-    Failed,
+    /// The receiver dropped mid-transfer. The share keeps serving, so it can
+    /// reconnect and pick up where it stopped.
+    Interrupted,
 }
 
 pub struct Share {
@@ -98,17 +100,26 @@ pub struct Share {
     target: Option<TransferPeer>,
     /// Device the share was offered to, and the outcome so far.
     pub invite: Option<(String, SharedString)>,
+    /// Outgoing data is held back; receivers stay connected and wait.
+    pub paused: bool,
 }
 
 impl Share {
     pub fn active(&self) -> bool {
-        !matches!(self.status, ShareStatus::Done | ShareStatus::Failed)
+        self.status != ShareStatus::Done
+    }
+
+    /// Whether Pause/Resume applies: the files are ready and not all sent.
+    pub fn can_pause(&self) -> bool {
+        self.result.is_some() && self.active()
     }
 }
 
 #[derive(PartialEq)]
 pub enum DownloadStatus {
     Running,
+    /// Stopped by the user with the partial data kept, to resume from.
+    Paused,
     Done,
     Failed(String),
 }
@@ -130,6 +141,25 @@ pub struct Download {
     peer: Option<TransferPeer>,
     /// What "Show in Finder" selects once done.
     pub reveal: Option<PathBuf>,
+    /// The running task is being stopped to pause rather than cancel.
+    pausing: bool,
+    /// Lost the sender and trying to reach it again.
+    pub reconnecting: bool,
+}
+
+impl Download {
+    /// Running and not already being stopped.
+    pub fn can_pause(&self) -> bool {
+        self.status == DownloadStatus::Running && self.cancel.is_some()
+    }
+
+    /// Done or failed: nothing left to run or resume.
+    pub fn finished(&self) -> bool {
+        matches!(
+            self.status,
+            DownloadStatus::Done | DownloadStatus::Failed(_)
+        )
+    }
 }
 
 #[derive(Clone)]
@@ -411,7 +441,7 @@ impl Dash {
 
     /// True while anything is mid-transfer; network changes and updates wait.
     pub fn busy(&self) -> bool {
-        self.active_sends() > 0 || self.active_receives() > 0
+        self.active_sends() > 0 || self.downloads.iter().any(|d| !d.finished())
     }
 
     pub fn active_sends(&self) -> usize {
@@ -472,6 +502,7 @@ impl Dash {
                 record: None,
                 target: None,
                 invite: None,
+                paused: false,
             },
         );
         self.transfers_changed(cx);
@@ -516,7 +547,10 @@ impl Dash {
             abort.abort();
         }
         if let Some(id) = share.record.take() {
-            if share.active() {
+            if share.status == ShareStatus::Interrupted {
+                let error = Some("The receiver disconnected".to_string());
+                finish_record(&self.history, &id, TransferStatus::Failed, None, error);
+            } else if share.active() {
                 finish_record(&self.history, &id, TransferStatus::Cancelled, None, None);
             }
         }
@@ -531,6 +565,19 @@ impl Dash {
         {
             self.verifying = None;
         }
+        self.transfers_changed(cx);
+    }
+
+    /// Holds back or releases a share's outgoing data. Receivers stay
+    /// connected while it's paused and carry on when it resumes.
+    pub fn pause_share(&mut self, tag: u64, paused: bool, cx: &mut Context<Self>) {
+        let Some(share) = self.share_mut(tag).filter(|s| s.can_pause()) else {
+            return;
+        };
+        if let Some(result) = &share.result {
+            result.pause.set_paused(paused);
+        }
+        share.paused = paused;
         self.transfers_changed(cx);
     }
 
@@ -618,9 +665,9 @@ impl Dash {
         if self
             .downloads
             .iter()
-            .any(|d| d.hash == hash && d.status == DownloadStatus::Running)
+            .any(|d| d.hash == hash && !d.finished())
         {
-            self.ticket_error = Some("That ticket is already downloading.".into());
+            self.ticket_error = Some("That ticket is already downloading or paused.".into());
             cx.notify();
             return false;
         }
@@ -630,15 +677,7 @@ impl Dash {
         if let Some(name) = &sub_folder {
             output_dir = output_dir.join(sanitize_folder_name(name, &sender_id[..12]));
         }
-        let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
         let tag = self.tag();
-        let task = backend::run(backend::receive(
-            ticket.clone(),
-            output_dir.clone(),
-            self.network(),
-            backend::handle(&self.events, tag),
-            cancel_rx,
-        ));
         self.downloads.insert(
             0,
             Download {
@@ -649,34 +688,100 @@ impl Dash {
                 name: None,
                 status: DownloadStatus::Running,
                 progress: Progress::default(),
-                cancel: Some(cancel_tx),
+                cancel: None,
                 output_dir,
                 record: None,
                 file_names: Vec::new(),
                 conflicts: 0,
                 peer: Some(sender.unwrap_or_else(|| self.peer(&sender_id))),
                 reveal: None,
+                pausing: false,
+                reconnecting: false,
             },
         );
+        self.run_download(tag, cx);
+        true
+    }
+
+    /// Starts (or resumes) the download task for `tag`. The engine fetches
+    /// only what its partial store lacks.
+    fn run_download(&mut self, tag: u64, cx: &mut Context<Self>) {
+        let network = self.network();
+        let handle = backend::handle(&self.events, tag);
+        let Some(download) = self.download_mut(tag) else {
+            return;
+        };
+        let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+        let task = backend::run(backend::receive(
+            download.ticket.clone(),
+            download.output_dir.clone(),
+            network,
+            handle,
+            cancel_rx,
+        ));
+        download.cancel = Some(cancel_tx);
+        download.status = DownloadStatus::Running;
+        download.pausing = false;
+        download.reconnecting = false;
         cx.spawn(async move |this, cx| {
             let result = task.await;
             this.update(cx, |this, cx| this.receive_finished(tag, result, cx))
         })
         .detach();
         self.transfers_changed(cx);
-        true
     }
 
-    pub fn cancel_download(&mut self, tag: u64, cx: &mut Context<Self>) {
-        if let Some(cancel) = self.download_mut(tag).and_then(|d| d.cancel.take()) {
+    /// Stops a running download but keeps what arrived, to resume later.
+    pub fn pause_download(&mut self, tag: u64, cx: &mut Context<Self>) {
+        let Some(download) = self
+            .download_mut(tag)
+            .filter(|d| d.status == DownloadStatus::Running)
+        else {
+            return;
+        };
+        if let Some(cancel) = download.cancel.take() {
+            download.pausing = true;
             let _ = cancel.send(());
         }
         cx.notify();
     }
 
+    pub fn resume_download(&mut self, tag: u64, cx: &mut Context<Self>) {
+        if self
+            .download_mut(tag)
+            .is_some_and(|d| d.status == DownloadStatus::Paused)
+        {
+            self.run_download(tag, cx);
+        }
+    }
+
+    /// Cancels a running or paused download and deletes its partial data.
+    pub fn cancel_download(&mut self, tag: u64, cx: &mut Context<Self>) {
+        let Some(download) = self.download_mut(tag) else {
+            return;
+        };
+        match download.status {
+            DownloadStatus::Running => {
+                download.pausing = false;
+                if let Some(cancel) = download.cancel.take() {
+                    let _ = cancel.send(());
+                }
+            }
+            DownloadStatus::Paused => {
+                backend::discard_partial(&download.hash);
+                if let Some(id) = download.record.take() {
+                    finish_record(&self.history, &id, TransferStatus::Cancelled, None, None);
+                }
+                self.downloads.retain(|d| d.tag != tag);
+                self.transfers_changed(cx);
+            }
+            _ => {}
+        }
+        cx.notify();
+    }
+
     pub fn dismiss_download(&mut self, tag: u64, cx: &mut Context<Self>) {
-        self.downloads
-            .retain(|d| d.tag != tag || d.status == DownloadStatus::Running);
+        self.downloads.retain(|d| d.tag != tag || !d.finished());
         cx.notify();
     }
 
@@ -705,8 +810,7 @@ impl Dash {
                 self.stop_share(tag, cx);
             }
         } else {
-            self.downloads
-                .retain(|d| d.status == DownloadStatus::Running);
+            self.downloads.retain(|d| !d.finished());
         }
         cx.notify();
     }
@@ -716,8 +820,15 @@ impl Dash {
         let Some(download) = self.download_mut(tag) else {
             return;
         };
-        let record = download.record.take();
         download.cancel = None;
+        download.reconnecting = false;
+        if matches!(&result, Err(e) if e == "cancelled") && std::mem::take(&mut download.pausing) {
+            // Keep the history row open; it closes when the download ends.
+            download.status = DownloadStatus::Paused;
+            self.transfers_changed(cx);
+            return;
+        }
+        let record = download.record.take();
         match result {
             Ok(()) => {
                 let name = download
@@ -734,6 +845,7 @@ impl Dash {
                 cx.emit(Toast(format!("Received {name}").into()));
             }
             Err(error) if error == "cancelled" => {
+                backend::discard_partial(&download.hash);
                 if let Some(id) = record {
                     finish_record(&history, &id, TransferStatus::Cancelled, None, None);
                 }
@@ -1198,6 +1310,8 @@ impl Dash {
             | "receive-file-metadata"
             | "receive-file-names"
             | "receive-conflicts"
+            | "receive-reconnecting"
+            | "receive-reconnected"
             | "receive-completed" => self.on_receive_event(event.tag, &event.name, payload),
             "device-node-network-ready" => self.network_ready = true,
             "device-node-network-warming" => self.network_ready = false,
@@ -1319,6 +1433,10 @@ impl Dash {
                 if let Some(progress) = Progress::parse(payload) {
                     share.progress = progress;
                 }
+                // The receiver reconnected and is resuming.
+                if share.status == ShareStatus::Interrupted {
+                    share.status = ShareStatus::Transferring;
+                }
             }
             "transfer-completed" => {
                 share.status = ShareStatus::Done;
@@ -1330,10 +1448,9 @@ impl Dash {
                 cx.emit(Toast(format!("Sent {}", share.title).into()));
             }
             "transfer-failed" => {
-                share.status = ShareStatus::Failed;
-                if let Some(id) = share.record.take() {
-                    finish_record(history, &id, TransferStatus::Failed, None, None);
-                }
+                // Still serving: the history row stays open in case the
+                // receiver comes back.
+                share.status = ShareStatus::Interrupted;
             }
             _ => {}
         }
@@ -1349,6 +1466,7 @@ impl Dash {
             file_names,
             conflicts,
             peer,
+            reconnecting,
             ..
         }) = self
             .downloads
@@ -1368,6 +1486,8 @@ impl Dash {
                     *progress = p;
                 }
             }
+            "receive-reconnecting" => *reconnecting = true,
+            "receive-reconnected" => *reconnecting = false,
             "receive-file-names" => {
                 *file_names = json(payload).unwrap_or_default();
             }
