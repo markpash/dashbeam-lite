@@ -29,7 +29,10 @@ pub async fn download(
 ) -> anyhow::Result<ReceiveResult> {
     let ticket = BlobTicket::from_str(&ticket_str)?;
     let addr = ticket.addr().clone();
-    let secret_key = get_or_create_secret()?;
+    let secret_key = match options.secret_key.clone() {
+        Some(key) => key,
+        None => get_or_create_secret()?,
+    };
 
     let custom_infra = protocol::uses_custom_infra(&options.discovery_mode, &options.relay_mode);
     let mut builder =
@@ -69,6 +72,29 @@ pub async fn download(
     let output_dir = options.output_dir.clone().unwrap_or_else(|| {
         dirs::download_dir().unwrap_or_else(|| std::env::current_dir().unwrap())
     });
+
+    // Names only arrive with the files. Ask the sender up front (on the
+    // metadata protocol, which a single-receiver share doesn't gate) so the
+    // download is labelled while it runs.
+    let _metadata = {
+        let app_handle = app_handle.clone();
+        let ticket = ticket_str.clone();
+        let options = ReceiveOptions {
+            relay_mode: options.relay_mode.clone(),
+            discovery_mode: options.discovery_mode.clone(),
+            ..Default::default()
+        };
+        n0_future::task::AbortOnDropHandle::new(n0_future::task::spawn(async move {
+            let fetch = protocol::fetch_metadata(ticket, options);
+            if let Ok(Ok(metadata)) =
+                tokio::time::timeout(std::time::Duration::from_secs(20), fetch).await
+            {
+                if let Ok(payload) = serde_json::to_string(&metadata) {
+                    emit_event_with_payload(&app_handle, "receive-file-metadata", &payload);
+                }
+            }
+        }))
+    };
 
     let transfer = async {
         let downloaded =
@@ -171,6 +197,7 @@ mod tests {
             ticket_type: AddrInfoOptions::RelayAndAddresses,
             magic_ipv4_addr: None,
             magic_ipv6_addr: None,
+            single_receiver: false,
         };
 
         let result = start_share(temp_path, send_opts, None, Some(expected_metadata.clone()))
@@ -183,6 +210,7 @@ mod tests {
             discovery_mode: Default::default(),
             magic_ipv4_addr: None,
             magic_ipv6_addr: None,
+            secret_key: None,
         };
 
         let fetched = protocol::fetch_metadata(result.ticket, recv_opts)

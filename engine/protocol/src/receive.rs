@@ -169,6 +169,30 @@ impl AttemptError {
     }
 }
 
+/// The sender closed the connection because it serves someone else: a
+/// single-receiver share that another device already took.
+fn turned_away(connection: &iroh::endpoint::Connection) -> bool {
+    matches!(
+        connection.close_reason(),
+        Some(iroh::endpoint::ConnectionError::ApplicationClosed(closed))
+            if closed.error_code == iroh_blobs::protocol::ERR_PERMISSION
+    )
+}
+
+impl AttemptError {
+    /// Makes the failure final if the sender turned this device away.
+    fn unless_turned_away(self, connection: &iroh::endpoint::Connection) -> Self {
+        if !turned_away(connection) {
+            return self;
+        }
+        Self {
+            error: anyhow::anyhow!("Another device is already receiving this transfer"),
+            retryable: false,
+            ..self
+        }
+    }
+}
+
 /// Whether a failed get is worth retrying on a new connection. Bad data and
 /// a failing local store would fail the same way again; a dropped connection,
 /// or a sender that has stopped serving for now, may not.
@@ -341,7 +365,7 @@ async fn download_attempt(
             Ok(found) => found,
             Err(e) => {
                 tracing::error!("Failed to get sizes: {:?}", e);
-                return Err(AttemptError::get(e, 0));
+                return Err(AttemptError::get(e, 0).unless_turned_away(&connection));
             }
         };
     if reconnecting {
@@ -367,7 +391,7 @@ async fn download_attempt(
     let mut received = received_with(0);
     emit_progress_event(app_handle, received, payload_size, 0.0);
 
-    let get = db.remote().execute_get(connection, local.missing());
+    let get = db.remote().execute_get(connection.clone(), local.missing());
     let mut stream = get.stream();
     let transfer_start_time = Instant::now();
     let mut speed = SpeedMeter::new(SPEED_WINDOW_SECS);
@@ -422,7 +446,7 @@ async fn download_attempt(
             }
             GetProgressItem::Error(cause) => {
                 tracing::error!("Download error: {:?}", cause);
-                return Err(AttemptError::get(cause, wire_ms()));
+                return Err(AttemptError::get(cause, wire_ms()).unless_turned_away(&connection));
             }
         }
     }

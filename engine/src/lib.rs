@@ -13,6 +13,8 @@
 
 pub use native::*;
 
+pub use protocol::SecretKey;
+
 pub use protocol::identity::{short_fingerprint, unix_now_ms};
 /// Shared protocol helpers not re-exported by the platform crates.
 pub use protocol::{

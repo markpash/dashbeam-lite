@@ -73,7 +73,8 @@ impl ProtocolHandler for DropFirstConnection {
         if !self.dropped.swap(true, Ordering::SeqCst) {
             // Late enough that the receiver counts as connected.
             tokio::time::sleep(Duration::from_millis(200)).await;
-            connection.close(1u32.into(), b"simulated drop");
+            // Not 1: that code means "turned away", which ends the download.
+            connection.close(99u32.into(), b"simulated drop");
             return Ok(());
         }
         self.blobs.accept(connection).await

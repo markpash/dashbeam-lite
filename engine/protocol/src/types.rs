@@ -16,6 +16,8 @@ pub struct SendOptions {
     pub ticket_type: AddrInfoOptions,
     pub magic_ipv4_addr: Option<std::net::SocketAddrV4>,
     pub magic_ipv6_addr: Option<std::net::SocketAddrV6>,
+    /// Serve only the first device that connects; anyone else is turned away.
+    pub single_receiver: bool,
 }
 
 #[derive(Debug, Default)]
@@ -25,6 +27,10 @@ pub struct ReceiveOptions {
     pub discovery_mode: DiscoveryModeOption,
     pub magic_ipv4_addr: Option<std::net::SocketAddrV4>,
     pub magic_ipv6_addr: Option<std::net::SocketAddrV6>,
+    /// Key the download connects with. Reusing one across pause and resume
+    /// keeps a single-receiver share recognising this device; `None` makes a
+    /// fresh one.
+    pub secret_key: Option<iroh::SecretKey>,
 }
 
 #[derive(Clone, Debug)]

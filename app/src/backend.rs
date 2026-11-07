@@ -146,6 +146,8 @@ pub async fn share(
         relay_mode,
         discovery_mode: build_discovery_mode(network.discovery)?,
         ticket_type: AddrInfoOptions::RelayAndAddresses,
+        // Every share is for one receiver, picked when the files are.
+        single_receiver: true,
         ..Default::default()
     };
     let result = engine::start_share_items(paths, options, &handle, Some(metadata.clone()))
@@ -164,6 +166,7 @@ pub async fn receive(
     ticket: String,
     output_dir: PathBuf,
     network: Network,
+    key: engine::SecretKey,
     handle: Handle,
     cancel: tokio::sync::oneshot::Receiver<()>,
 ) -> Result<(), String> {
@@ -173,6 +176,7 @@ pub async fn receive(
         output_dir: Some(output_dir),
         relay_mode,
         discovery_mode: build_discovery_mode(network.discovery)?,
+        secret_key: Some(key),
         ..Default::default()
     };
     engine::download(ticket, options, handle, cancel)

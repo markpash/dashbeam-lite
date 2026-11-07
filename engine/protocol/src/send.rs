@@ -184,6 +184,15 @@ impl PauseGate {
     }
 }
 
+/// How a share session treats its receivers.
+#[derive(Clone, Debug, Default)]
+pub struct ShareControls {
+    pub pause: PauseGate,
+    /// Serve only the first endpoint that connects. Needs the blobs protocol
+    /// built with `ConnectMode::Intercept`.
+    pub single_receiver: bool,
+}
+
 /// Shared send orchestration after blobs are imported into the store.
 pub struct ShareSessionOutcome<S> {
     pub ticket: String,
@@ -214,7 +223,7 @@ pub async fn run_share_session<S>(
     relay_mode: RelayMode,
     cleanup_dir: Option<PathBuf>,
     progress_rx: mpsc::Receiver<ProviderMessage>,
-    pause: PauseGate,
+    controls: ShareControls,
 ) -> anyhow::Result<ShareSessionOutcome<S>>
 where
     S: Send + Sync + 'static,
@@ -225,7 +234,7 @@ where
         app_handle.clone(),
         size,
         completed_peers.clone(),
-        pause,
+        controls,
     ));
 
     let router = iroh::protocol::Router::builder(endpoint)
@@ -273,7 +282,7 @@ pub async fn run_share_on_endpoint(
     relay_mode: RelayMode,
     cleanup_dir: Option<PathBuf>,
     progress_rx: mpsc::Receiver<ProviderMessage>,
-    pause: PauseGate,
+    controls: ShareControls,
 ) -> anyhow::Result<ShareSessionOutcome<()>> {
     let completed_peers = Arc::new(AtomicUsize::new(0));
     let progress_handle = n0_future::task::spawn(show_provide_progress_with_logging(
@@ -281,7 +290,7 @@ pub async fn run_share_on_endpoint(
         app_handle.clone(),
         size,
         completed_peers.clone(),
-        pause,
+        controls,
     ));
 
     timeout(Duration::from_secs(30), async move {
@@ -398,8 +407,14 @@ async fn show_provide_progress_with_logging(
     app_handle: AppHandle,
     total_collection_size: u64,
     completed_requests: Arc<AtomicUsize>,
-    pause: PauseGate,
+    controls: ShareControls,
 ) -> anyhow::Result<()> {
+    let ShareControls {
+        pause,
+        single_receiver,
+    } = controls;
+    // The one endpoint a single-receiver share serves, once it has connected.
+    let mut receiver: Option<iroh::EndpointId> = None;
     use n0_future::FuturesUnordered;
     use std::sync::atomic::Ordering;
     use std::sync::Arc;
@@ -436,6 +451,42 @@ async fn show_provide_progress_with_logging(
                             });
                         } else {
                             msg.tx.send(Ok(())).await.ok();
+                        }
+                    }
+                    iroh_blobs::provider::events::ProviderMessage::ClientConnected(msg) => {
+                        let (connection_id, endpoint_id) = (msg.connection_id, msg.endpoint_id);
+                        let allowed = !single_receiver
+                            || match (receiver, endpoint_id) {
+                                (_, None) => false,
+                                (None, Some(id)) => {
+                                    receiver = Some(id);
+                                    true
+                                }
+                                (Some(locked), Some(id)) => locked == id,
+                            };
+                        if !allowed {
+                            tracing::warn!(
+                                "Turned away {:?}: this share has a receiver already",
+                                endpoint_id
+                            );
+                            msg.tx
+                                .send(Err(iroh_blobs::provider::events::AbortReason::Permission))
+                                .await
+                                .ok();
+                            continue;
+                        }
+                        msg.tx.send(Ok(())).await.ok();
+                        if let Some(endpoint_id) = endpoint_id {
+                            peers.insert(connection_id, *endpoint_id.as_bytes());
+                            let payload = serde_json::json!({
+                                "endpoint_id": endpoint_id.to_string(),
+                            });
+                            if let Some(handle) = &app_handle {
+                                let _ = handle.emit_event_with_payload(
+                                    "share-peer-connected",
+                                    &payload.to_string(),
+                                );
+                            }
                         }
                     }
                     iroh_blobs::provider::events::ProviderMessage::ClientConnectedNotify(msg) => {

@@ -102,6 +102,17 @@ pub struct Share {
     pub invite: Option<(String, SharedString)>,
     /// Outgoing data is held back; receivers stay connected and wait.
     pub paused: bool,
+    /// Who this share is for, once chosen. Each share serves one receiver.
+    pub recipient: Option<Recipient>,
+}
+
+/// The one receiver of a share.
+#[derive(Clone)]
+pub enum Recipient {
+    /// A paired or nearby device, offered the share directly.
+    Device { endpoint_id: String, name: String },
+    /// Whoever uses the ticket first; it's copied to the clipboard.
+    Ticket,
 }
 
 impl Share {
@@ -129,7 +140,6 @@ pub struct Download {
     ticket: String,
     /// Content hash; two downloads of the same content would share a store.
     hash: String,
-    sub_folder: Option<String>,
     pub name: Option<String>,
     pub status: DownloadStatus,
     pub progress: Progress,
@@ -138,13 +148,16 @@ pub struct Download {
     record: Option<String>,
     file_names: Vec<String>,
     pub conflicts: u32,
-    peer: Option<TransferPeer>,
+    pub peer: Option<TransferPeer>,
     /// What "Show in Finder" selects once done.
     pub reveal: Option<PathBuf>,
     /// The running task is being stopped to pause rather than cancel.
     pausing: bool,
     /// Lost the sender and trying to reach it again.
     pub reconnecting: bool,
+    /// The key this download connects with, kept across pause and resume so
+    /// a share that serves one receiver keeps recognising it.
+    key: engine::SecretKey,
 }
 
 impl Download {
@@ -207,6 +220,8 @@ pub struct Dash {
     pub nearby_unavailable: Option<String>,
     /// Newest first.
     pub shares: Vec<Share>,
+    /// Shares waiting for a receiver to be picked, oldest first.
+    pub choosing: Vec<u64>,
     /// Newest first.
     pub downloads: Vec<Download>,
     /// Why the last pasted ticket didn't start.
@@ -274,6 +289,7 @@ impl Dash {
             shares: Vec::new(),
             downloads: Vec::new(),
             ticket_error: None,
+            choosing: Vec::new(),
             invites: Vec::new(),
             pairing_code: None,
             verifying: None,
@@ -503,8 +519,11 @@ impl Dash {
                 target: None,
                 invite: None,
                 paused: false,
+                recipient: None,
             },
         );
+        // Every share needs its receiver picked before anything is offered.
+        self.choosing.push(tag);
         self.transfers_changed(cx);
         cx.spawn(async move |this, cx| {
             let Some(result) = task.await else { return };
@@ -524,9 +543,11 @@ impl Dash {
                         share.result = Some(result);
                         share.abort = None;
                         share.status = ShareStatus::Waiting;
+                        this.deliver(tag, cx);
                     }
                     Err(error) => {
                         this.shares.retain(|s| s.tag != tag);
+                        this.choosing.retain(|t| *t != tag);
                         this.toast(error, cx);
                     }
                 }
@@ -543,6 +564,7 @@ impl Dash {
             return;
         };
         let mut share = self.shares.remove(index);
+        self.choosing.retain(|t| *t != tag);
         if let Some(abort) = share.abort.take() {
             abort.abort();
         }
@@ -566,6 +588,36 @@ impl Dash {
             self.verifying = None;
         }
         self.transfers_changed(cx);
+    }
+
+    /// Settles who a share is for, and offers it once its files are ready.
+    pub fn choose_receiver(&mut self, tag: u64, recipient: Recipient, cx: &mut Context<Self>) {
+        self.choosing.retain(|t| *t != tag);
+        let Some(share) = self.share_mut(tag) else {
+            return;
+        };
+        share.recipient = Some(recipient);
+        self.deliver(tag, cx);
+        self.transfers_changed(cx);
+    }
+
+    /// Hands a prepared share to its receiver: an invite to a device, or the
+    /// ticket on the clipboard. Waits for whichever of the two comes last.
+    fn deliver(&mut self, tag: u64, cx: &mut Context<Self>) {
+        let Some(share) = self.share_mut(tag) else {
+            return;
+        };
+        let (Some(recipient), Some(ticket)) = (share.recipient.clone(), share.ticket.clone())
+        else {
+            return;
+        };
+        match recipient {
+            Recipient::Device { endpoint_id, .. } => self.send_to(tag, endpoint_id, cx),
+            Recipient::Ticket => {
+                cx.write_to_clipboard(ClipboardItem::new_string(ticket));
+                self.toast("Ticket copied. Send it to the receiver.".to_string(), cx);
+            }
+        }
     }
 
     /// Holds back or releases a share's outgoing data. Receivers stay
@@ -684,7 +736,6 @@ impl Dash {
                 tag,
                 ticket,
                 hash,
-                sub_folder,
                 name: None,
                 status: DownloadStatus::Running,
                 progress: Progress::default(),
@@ -697,6 +748,7 @@ impl Dash {
                 reveal: None,
                 pausing: false,
                 reconnecting: false,
+                key: engine::SecretKey::generate(),
             },
         );
         self.run_download(tag, cx);
@@ -716,6 +768,7 @@ impl Dash {
             download.ticket.clone(),
             download.output_dir.clone(),
             network,
+            download.key.clone(),
             handle,
             cancel_rx,
         ));
@@ -746,55 +799,39 @@ impl Dash {
         cx.notify();
     }
 
+    /// Carries on a paused or failed download from the data it kept.
     pub fn resume_download(&mut self, tag: u64, cx: &mut Context<Self>) {
         if self
             .download_mut(tag)
-            .is_some_and(|d| d.status == DownloadStatus::Paused)
+            .is_some_and(|d| matches!(d.status, DownloadStatus::Paused | DownloadStatus::Failed(_)))
         {
             self.run_download(tag, cx);
         }
     }
 
-    /// Cancels a running or paused download and deletes its partial data.
-    pub fn cancel_download(&mut self, tag: u64, cx: &mut Context<Self>) {
+    /// Removes a download from the list, stopping it first if it runs and
+    /// deleting any partial data it kept.
+    pub fn remove_download(&mut self, tag: u64, cx: &mut Context<Self>) {
         let Some(download) = self.download_mut(tag) else {
             return;
         };
-        match download.status {
-            DownloadStatus::Running => {
-                download.pausing = false;
-                if let Some(cancel) = download.cancel.take() {
-                    let _ = cancel.send(());
-                }
+        if download.status == DownloadStatus::Running {
+            // `receive_finished` cleans up once the task stops.
+            download.pausing = false;
+            if let Some(cancel) = download.cancel.take() {
+                let _ = cancel.send(());
             }
-            DownloadStatus::Paused => {
-                backend::discard_partial(&download.hash);
-                if let Some(id) = download.record.take() {
-                    finish_record(&self.history, &id, TransferStatus::Cancelled, None, None);
-                }
-                self.downloads.retain(|d| d.tag != tag);
-                self.transfers_changed(cx);
-            }
-            _ => {}
-        }
-        cx.notify();
-    }
-
-    pub fn dismiss_download(&mut self, tag: u64, cx: &mut Context<Self>) {
-        self.downloads.retain(|d| d.tag != tag || !d.finished());
-        cx.notify();
-    }
-
-    pub fn retry_download(&mut self, tag: u64, cx: &mut Context<Self>) {
-        let Some(index) = self
-            .downloads
-            .iter()
-            .position(|d| d.tag == tag && matches!(d.status, DownloadStatus::Failed(_)))
-        else {
+            cx.notify();
             return;
-        };
-        let old = self.downloads.remove(index);
-        self.receive(old.ticket, old.sub_folder, old.peer, cx);
+        }
+        if download.status != DownloadStatus::Done {
+            backend::discard_partial(&download.hash);
+        }
+        if let Some(id) = download.record.take() {
+            finish_record(&self.history, &id, TransferStatus::Cancelled, None, None);
+        }
+        self.downloads.retain(|d| d.tag != tag);
+        self.transfers_changed(cx);
     }
 
     /// Drops finished items from the Send (`sends`) or Receive list.
@@ -1440,6 +1477,11 @@ impl Dash {
             }
             "transfer-completed" => {
                 share.status = ShareStatus::Done;
+                share.paused = false;
+                // Its one receiver has everything; stop serving.
+                if let Some(result) = share.result.take() {
+                    backend::spawn(backend::stop_share(result));
+                }
                 if let Some(id) = share.record.take() {
                     let peers = share.peers.max(1);
                     let _ = history.update(&id, |r| r.peer_count = peers);

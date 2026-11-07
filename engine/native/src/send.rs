@@ -8,7 +8,7 @@ use iroh_blobs::{
 };
 use protocol::{
     run_share_session, AppHandle, DiscoveryModeOption, FileMetadata, PauseGate, SendOptions,
-    METADATA_ALPN,
+    ShareControls, METADATA_ALPN,
 };
 use tokio::sync::mpsc;
 
@@ -87,6 +87,7 @@ pub async fn start_share_items(
         "file".to_string()
     };
     let ticket_type = options.ticket_type;
+    let single_receiver = options.single_receiver;
 
     let setup = async move {
         // Removes the half-built store if setup fails or is cancelled; the
@@ -100,7 +101,8 @@ pub async fn start_share_items(
             Some(EventSender::new(
                 progress_tx,
                 EventMask {
-                    connected: ConnectMode::Notify,
+                    // Lets a single-receiver share turn others away.
+                    connected: ConnectMode::Intercept,
                     get: RequestMode::NotifyLog,
                     // Lets `SendResult::pause` hold the data back.
                     throttle: ThrottleMode::Intercept,
@@ -126,7 +128,10 @@ pub async fn start_share_items(
             relay_mode,
             Some(blobs_data_dir2),
             progress_rx,
-            pause.clone(),
+            ShareControls {
+                pause: pause.clone(),
+                single_receiver,
+            },
         )
         .await
         .map(|outcome| {

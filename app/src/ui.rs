@@ -1,6 +1,6 @@
 use crate::state::{
     format_size, items, Dash, DashGlobal, Download, DownloadStatus, Invite, NodeState, Progress,
-    Share, ShareStatus, Toast, Update,
+    Recipient, Share, ShareStatus, Toast, Update,
 };
 use crate::{autostart, settings::Settings, updater};
 use engine::{
@@ -8,7 +8,6 @@ use engine::{
 };
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::popover::Popover;
 use gpui_kit::component::progress::Progress as ProgressBar;
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::tab::TabBar;
@@ -296,6 +295,7 @@ impl Render for Shell {
             _ => self.settings(window, cx).into_any_element(),
         };
         v_flex()
+            .relative()
             .size_full()
             .bg(bg)
             .text_color(fg)
@@ -333,6 +333,7 @@ impl Render for Shell {
                     .p_5()
                     .child(content),
             )
+            .children(self.receiver_picker(cx))
             .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
                 let paths = paths.paths().to_vec();
                 this.tab = 0;
@@ -371,27 +372,177 @@ fn row() -> Div {
     h_flex().gap_2().items_center()
 }
 
-/// A progress bar with sizes, then `note` if given, else speed and time left.
-fn progress_line(id: impl Into<ElementId>, p: &Progress, note: Option<&str>, cx: &App) -> Div {
-    let detail = match note {
-        Some(note) => note.to_string(),
-        None => format!(
-            "{}/s{}",
-            format_size(p.speed_bps as u64),
-            p.eta().map(|eta| format!(" · {eta}")).unwrap_or_default()
-        ),
+/// How a transfer row's progress reads at a glance.
+#[derive(Clone, Copy)]
+enum Tone {
+    Active,
+    Held,
+    Done,
+    Failed,
+}
+
+/// What one row of a transfer table shows.
+struct TransferCells {
+    id: usize,
+    icon: IconName,
+    name: String,
+    /// Who it's to or from.
+    peer: String,
+    size: u64,
+    /// `None` hides the bar (nothing measurable yet).
+    fraction: Option<f32>,
+    status: String,
+    /// Speed and time left, or why it's stuck.
+    detail: String,
+    tone: Tone,
+}
+
+const COL_SIZE: f32 = 64.;
+const COL_PROGRESS: f32 = 124.;
+const COL_STATUS: f32 = 150.;
+const COL_ACTIONS: f32 = 52.;
+
+/// Column titles over a transfer table.
+fn transfer_header(cx: &App) -> Div {
+    let label = |text: &'static str| {
+        div()
+            .text_xs()
+            .text_color(cx.theme().muted_foreground)
+            .child(text)
     };
-    v_flex()
-        .gap_1()
-        .child(ProgressBar::new(id).value(p.fraction() * 100.0))
-        .child(muted(
-            format!(
-                "{} of {} · {detail}",
-                format_size(p.bytes),
-                format_size(p.total)
+    h_flex()
+        .gap_3()
+        .px_3()
+        .py_1()
+        .border_b_1()
+        .border_color(cx.theme().border)
+        .bg(cx.theme().table_head)
+        .child(div().w(px(16.)))
+        .child(div().flex_1().min_w_0().child(label("Name")))
+        .child(
+            div()
+                .w(px(COL_SIZE))
+                .flex()
+                .justify_end()
+                .child(label("Size")),
+        )
+        .child(div().w(px(COL_PROGRESS)).child(label("Progress")))
+        .child(div().w(px(COL_STATUS)).child(label("Status")))
+        .child(div().w(px(COL_ACTIONS)))
+}
+
+/// A bordered table of transfer rows, or `empty` when there are none.
+fn transfer_table(rows: Vec<Div>, empty: &'static str, cx: &App) -> Div {
+    let table = v_flex()
+        .rounded_md()
+        .border_1()
+        .border_color(cx.theme().border)
+        .overflow_hidden();
+    if rows.is_empty() {
+        return table.child(div().p_4().flex().justify_center().child(muted(empty, cx)));
+    }
+    table.child(transfer_header(cx)).children(rows)
+}
+
+/// One compact transfer row: two lines of text, like a torrent client.
+fn transfer_row(cells: TransferCells, toggle: Button, remove: Button, cx: &App) -> Div {
+    let theme = cx.theme();
+    let small =
+        |text: String, color: Hsla| div().text_xs().text_color(color).truncate().child(text);
+    let bar_color = match cells.tone {
+        Tone::Active => theme.progress_bar,
+        Tone::Held => theme.warning,
+        Tone::Done => theme.success,
+        Tone::Failed => theme.danger,
+    };
+    let progress = match cells.fraction {
+        Some(f) => h_flex()
+            .gap_2()
+            .child(
+                div().flex_1().child(
+                    ProgressBar::new(("bar", cells.id))
+                        .color(bar_color)
+                        .value(f * 100.0),
+                ),
+            )
+            .child(
+                div()
+                    .w(px(34.))
+                    .text_xs()
+                    .text_right()
+                    .child(format!("{:.0}%", (f * 100.0).floor())),
             ),
-            cx,
-        ))
+        None => h_flex().child(small("—".into(), theme.muted_foreground)),
+    };
+    let status_color = match cells.tone {
+        Tone::Failed => theme.danger,
+        _ => theme.foreground,
+    };
+    h_flex()
+        .gap_3()
+        .px_3()
+        .py_1p5()
+        .items_center()
+        .border_b_1()
+        .border_color(theme.table_row_border)
+        .child(
+            Icon::new(cells.icon)
+                .small()
+                .text_color(theme.muted_foreground),
+        )
+        .child(
+            v_flex()
+                .flex_1()
+                .min_w_0()
+                .child(div().text_sm().truncate().child(cells.name))
+                .child(small(cells.peer, theme.muted_foreground)),
+        )
+        .child(
+            div()
+                .w(px(COL_SIZE))
+                .text_sm()
+                .text_right()
+                .child(if cells.size > 0 {
+                    format_size(cells.size)
+                } else {
+                    "—".into()
+                }),
+        )
+        .child(div().w(px(COL_PROGRESS)).child(progress))
+        .child(
+            v_flex()
+                .w(px(COL_STATUS))
+                .min_w_0()
+                .child(
+                    div()
+                        .text_sm()
+                        .truncate()
+                        .text_color(status_color)
+                        .child(cells.status),
+                )
+                .child(small(cells.detail, theme.muted_foreground)),
+        )
+        .child(
+            h_flex()
+                .w(px(COL_ACTIONS))
+                .justify_end()
+                .gap_1()
+                .child(toggle)
+                .child(remove),
+        )
+}
+
+fn percent(p: &Progress) -> String {
+    format!("{:.0}%", (p.fraction() * 100.0).floor())
+}
+
+/// Speed, then time left when known.
+fn rate(p: &Progress) -> String {
+    let speed = format!("{}/s", format_size(p.speed_bps as u64));
+    match p.eta() {
+        Some(eta) => format!("{speed} · {}", eta.trim_end_matches(" left")),
+        None => speed,
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -600,297 +751,336 @@ impl Shell {
 
     fn send(&mut self, cx: &mut Context<Self>) -> Div {
         let dash = self.dash.read(cx);
-        let border = cx.theme().border;
-        let choose = Button::new("choose")
-            .primary()
-            .label("Choose…")
-            .on_click(cx.listener(|this, _, _, cx| this.pick_files(cx)));
-        let drop_zone = if dash.shares.is_empty() {
-            v_flex()
-                .gap_3()
-                .items_center()
-                .justify_center()
-                .h(px(260.))
-                .child(muted("Drop files or folders here", cx))
-                .child(choose)
-        } else {
-            h_flex()
-                .gap_3()
-                .items_center()
-                .justify_center()
-                .p_3()
-                .child(muted("Drop more files or folders, or", cx))
-                .child(choose.small())
-        }
-        .rounded_lg()
-        .border_2()
-        .border_dashed()
-        .border_color(border);
-
-        // Devices a share can be offered to: online paired ones, then nearby.
-        let devices: Vec<(String, String)> = dash
-            .paired
-            .iter()
-            .filter(|d| d.online && d.pairing_status == PairingStatus::Active)
-            .map(|d| (d.endpoint_id.clone(), d.display_name.clone()))
-            .chain(dash.nearby.iter().filter(|d| d.identified).map(|d| {
-                (
-                    d.endpoint_id.clone(),
-                    device_label(d.display_name.as_deref(), &d.endpoint_id),
-                )
-            }))
-            .collect();
+        let drop_bar = h_flex()
+            .gap_3()
+            .items_center()
+            .justify_center()
+            .px_3()
+            .py_2()
+            .rounded_lg()
+            .border_2()
+            .border_dashed()
+            .border_color(cx.theme().border)
+            .child(muted("Drop files or folders here, or", cx))
+            .child(
+                Button::new("choose")
+                    .primary()
+                    .small()
+                    .label("Choose…")
+                    .on_click(cx.listener(|this, _, _, cx| this.pick_files(cx))),
+            );
         let finished = dash.shares.iter().filter(|s| !s.active()).count();
-        let mut page = v_flex()
-            .gap_4()
+        let rows: Vec<Div> = dash
+            .shares
+            .iter()
+            .map(|share| self.share_row(share, cx))
+            .collect();
+        v_flex()
+            .gap_3()
             .child(list_header("Send", finished, true, cx))
-            .child(drop_zone);
-        for share in &dash.shares {
-            page = page.child(self.share_card(share, &devices, cx));
-        }
-        page
+            .child(drop_bar)
+            .child(transfer_table(rows, "Nothing sent yet", cx))
     }
 
-    fn share_card(&self, share: &Share, devices: &[(String, String)], cx: &Context<Self>) -> Div {
+    fn share_row(&self, share: &Share, cx: &Context<Self>) -> Div {
         let tag = share.tag;
         let id = tag as usize;
-        let status = match share.status {
-            ShareStatus::Preparing => "Preparing transfer…",
-            _ if share.paused && share.active() => "Paused",
-            ShareStatus::Waiting => "Waiting for a receiver",
-            ShareStatus::Transferring => "Sending…",
-            ShareStatus::Done => "Sent",
-            ShareStatus::Interrupted => "Receiver disconnected, waiting for it to reconnect",
+        let choosing = self.dash.read(cx).choosing.contains(&tag);
+        let to = match &share.recipient {
+            Some(Recipient::Device { name, .. }) => format!("To {name}"),
+            Some(Recipient::Ticket) => "To whoever uses the ticket".to_string(),
+            None => "No receiver yet".to_string(),
         };
-        let summary = match &share.meta {
-            Some(meta) => format!("{} · {status}", format_size(meta.size)),
-            None => status.to_string(),
+        let p = &share.progress;
+        let (status, detail): (String, String) = match share.status {
+            ShareStatus::Preparing if choosing => ("Choose receiver".into(), "Preparing…".into()),
+            ShareStatus::Preparing => ("Preparing".into(), percent(p)),
+            _ if share.paused && share.active() => ("Paused".into(), String::new()),
+            ShareStatus::Waiting if choosing => ("Choose receiver".into(), String::new()),
+            ShareStatus::Waiting => (
+                "Waiting".into(),
+                match (&share.recipient, &share.invite) {
+                    (_, Some((_, text))) => text.to_string(),
+                    (Some(Recipient::Ticket), _) => "Ticket copied".into(),
+                    _ => String::new(),
+                },
+            ),
+            ShareStatus::Transferring => ("Sending".into(), rate(p)),
+            ShareStatus::Interrupted => ("Disconnected".into(), "Waiting for the receiver".into()),
+            ShareStatus::Done => ("Sent".into(), String::new()),
         };
-        let mut card = card(cx)
-            .child(heading(share.title.clone()))
-            .child(muted(summary, cx));
-        let show_progress = match share.status {
-            ShareStatus::Preparing => share.progress.total > 0,
-            ShareStatus::Transferring | ShareStatus::Interrupted => true,
-            _ => false,
+        let size = share.meta.as_ref().map(|m| m.size).unwrap_or(p.total);
+        let fraction = match share.status {
+            ShareStatus::Done => Some(1.0),
+            ShareStatus::Transferring | ShareStatus::Interrupted => Some(p.fraction()),
+            ShareStatus::Preparing if p.total > 0 => Some(p.fraction()),
+            _ => None,
         };
-        if show_progress {
-            let note = share.paused.then_some("Paused");
-            card = card.child(progress_line(("progress", id), &share.progress, note, cx));
-        }
-        if let (ShareStatus::Waiting, Some(ticket)) = (share.status, share.ticket.clone()) {
-            card = card.child(
-                row()
-                    .child(
-                        div()
-                            .flex_1()
-                            .truncate()
-                            .text_xs()
-                            .font_family("Menlo")
-                            .child(ticket.clone()),
-                    )
-                    .child(Button::new(("copy", id)).label("Copy ticket").on_click(
-                        move |_, window, cx| {
-                            cx.write_to_clipboard(ClipboardItem::new_string(ticket.clone()));
-                            window.push_notification("Ticket copied", cx);
-                        },
-                    )),
-            );
-        }
-        if let Some((_, text)) = &share.invite {
-            card = card.child(muted(text.clone(), cx));
-        }
-
-        let mut actions = row().justify_end();
-        if share.ticket.is_some() && share.active() && !devices.is_empty() {
-            let devices = devices.to_vec();
-            let dash = self.dash.clone();
-            actions = actions.child(
-                Popover::new(("send-to", id))
-                    .anchor(Anchor::TopRight)
-                    .trigger(Button::new(("send-to-button", id)).label("Send to…"))
-                    .content(move |_, _, cx| {
-                        let mut list = v_flex().gap_1().min_w(px(200.));
-                        for (ix, (endpoint_id, name)) in devices.iter().enumerate() {
-                            let (dash, endpoint_id) = (dash.clone(), endpoint_id.clone());
-                            list = list.child(
-                                Button::new(("device", ix))
-                                    .ghost()
-                                    .label(name.clone())
-                                    .on_click(cx.listener(move |state, _, window, cx| {
-                                        let endpoint_id = endpoint_id.clone();
-                                        dash.update(cx, |d, cx| d.send_to(tag, endpoint_id, cx));
-                                        state.dismiss(window, cx);
-                                    })),
-                            );
-                        }
-                        list
-                    }),
-            );
-        }
-        if share.can_pause() && (share.paused || share.status == ShareStatus::Transferring) {
-            let paused = share.paused;
-            actions = actions.child(
-                Button::new(("pause-share", id))
-                    .label(if paused { "Resume" } else { "Pause" })
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.dash
-                            .update(cx, |d, cx| d.pause_share(tag, !paused, cx))
-                    })),
-            );
-        }
-        let stop_label = match share.status {
-            ShareStatus::Preparing => "Cancel",
-            ShareStatus::Done => "Dismiss",
-            _ => "Stop sharing",
-        };
-        actions = actions.child(Button::new(("stop", id)).label(stop_label).on_click(
-            cx.listener(move |this, _, _, cx| this.dash.update(cx, |d, cx| d.stop_share(tag, cx))),
-        ));
-        card.child(actions)
+        let paused = share.paused;
+        let toggle = Button::new(("toggle", id))
+            .ghost()
+            .xsmall()
+            .icon(if paused {
+                IconName::Play
+            } else {
+                IconName::Pause
+            })
+            .tooltip(if paused { "Resume" } else { "Pause" })
+            .disabled(!share.can_pause())
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.dash
+                    .update(cx, |d, cx| d.pause_share(tag, !paused, cx))
+            }));
+        let remove = Button::new(("remove", id))
+            .ghost()
+            .xsmall()
+            .icon(IconName::Close)
+            .tooltip("Remove")
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.dash.update(cx, |d, cx| d.stop_share(tag, cx))
+            }));
+        transfer_row(
+            TransferCells {
+                id,
+                icon: IconName::ArrowUp,
+                name: share.title.clone(),
+                peer: to,
+                size,
+                fraction,
+                status,
+                detail,
+                tone: match (share.status, paused) {
+                    (ShareStatus::Done, _) => Tone::Done,
+                    (_, true) | (ShareStatus::Interrupted, _) => Tone::Held,
+                    _ => Tone::Active,
+                },
+            },
+            toggle,
+            remove,
+            cx,
+        )
     }
 
     fn receive(&mut self, cx: &mut Context<Self>) -> Div {
         let dash = self.dash.read(cx);
         let folder = dash.settings.download_dir();
         let error = dash.ticket_error.clone();
-        let form = card(cx)
-            .child(Input::new(&self.ticket))
-            .children(error.map(|e| div().text_sm().text_color(cx.theme().danger).child(e)))
+        let form = v_flex()
+            .gap_1()
             .child(
                 row()
+                    .child(div().flex_1().child(Input::new(&self.ticket).small()))
                     .child(
-                        div()
-                            .flex_1()
-                            .child(muted(format!("Saving to {}", folder.display()), cx)),
-                    )
-                    .child(Button::new("receive").primary().label("Receive").on_click(
-                        cx.listener(|this, _, window, cx| this.submit_ticket(window, cx)),
-                    )),
-            );
+                        Button::new("receive")
+                            .primary()
+                            .small()
+                            .label("Receive")
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.submit_ticket(window, cx)),
+                            ),
+                    ),
+            )
+            .child(match error {
+                Some(e) => div().text_xs().text_color(cx.theme().danger).child(e),
+                None => div()
+                    .text_xs()
+                    .truncate()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(format!("Saving to {}", folder.display())),
+            });
         let finished = dash.downloads.iter().filter(|d| d.finished()).count();
-        let mut page = v_flex()
-            .gap_4()
+        let rows: Vec<Div> = dash
+            .downloads
+            .iter()
+            .map(|download| self.download_row(download, cx))
+            .collect();
+        v_flex()
+            .gap_3()
             .child(list_header("Receive", finished, false, cx))
-            .child(form);
-        for download in &dash.downloads {
-            page = page.child(self.download_card(download, cx));
-        }
-        page
+            .child(form)
+            .child(transfer_table(rows, "Nothing received yet", cx))
     }
 
-    fn download_card(&self, download: &Download, cx: &Context<Self>) -> Div {
+    fn download_row(&self, download: &Download, cx: &Context<Self>) -> Div {
         let tag = download.tag;
         let id = tag as usize;
-        let dismiss = Button::new(("dismiss", id))
+        let p = &download.progress;
+        let from = match download.peer.as_ref().and_then(|p| p.display_name.clone()) {
+            Some(name) => format!("From {name}"),
+            None => "From a ticket".to_string(),
+        };
+        let (status, detail): (String, String) = match &download.status {
+            DownloadStatus::Running if download.reconnecting => {
+                ("Reconnecting".into(), "Lost the sender".into())
+            }
+            DownloadStatus::Running if p.total == 0 => ("Connecting".into(), String::new()),
+            DownloadStatus::Running => ("Receiving".into(), rate(p)),
+            DownloadStatus::Paused => ("Paused".into(), String::new()),
+            DownloadStatus::Done if download.conflicts > 0 => (
+                "Received".into(),
+                format!("{} renamed", items(download.conflicts)),
+            ),
+            DownloadStatus::Done => ("Received".into(), String::new()),
+            DownloadStatus::Failed(error) => ("Failed".into(), error.clone()),
+        };
+        let fraction = match download.status {
+            DownloadStatus::Done => Some(1.0),
+            _ if p.total > 0 => Some(p.fraction()),
+            _ => None,
+        };
+        let resumable = matches!(
+            download.status,
+            DownloadStatus::Paused | DownloadStatus::Failed(_)
+        );
+        let toggle = Button::new(("toggle", id))
             .ghost()
-            .label("Dismiss")
+            .xsmall()
+            .icon(if resumable {
+                IconName::Play
+            } else {
+                IconName::Pause
+            })
+            .tooltip(if resumable { "Resume" } else { "Pause" })
+            .disabled(!resumable && !download.can_pause())
             .on_click(cx.listener(move |this, _, _, cx| {
-                this.dash.update(cx, |d, cx| d.dismiss_download(tag, cx))
+                this.dash.update(cx, |d, cx| {
+                    if resumable {
+                        d.resume_download(tag, cx)
+                    } else {
+                        d.pause_download(tag, cx)
+                    }
+                })
             }));
-        match &download.status {
-            DownloadStatus::Running | DownloadStatus::Paused => {
-                let paused = download.status == DownloadStatus::Paused;
-                let note = if paused {
-                    Some("Paused")
-                } else if download.reconnecting {
-                    Some("Connection lost, reconnecting…")
-                } else {
-                    None
-                };
-                let toggle = (paused || download.can_pause()).then(|| {
-                    Button::new(("pause", id))
-                        .label(if paused { "Resume" } else { "Pause" })
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.dash.update(cx, |d, cx| {
-                                if paused {
-                                    d.resume_download(tag, cx)
-                                } else {
-                                    d.pause_download(tag, cx)
-                                }
-                            })
-                        }))
-                });
-                card(cx)
-                    .child(
-                        div().child(match (&download.name, download.progress.total) {
-                            (Some(name), _) => name.clone(),
-                            (None, 0) if paused => "Paused".into(),
-                            (None, 0) => "Connecting to sender…".into(),
-                            (None, _) => "Downloading…".into(),
-                        }),
-                    )
-                    .when(download.progress.total > 0, |card| {
-                        card.child(progress_line(
-                            ("progress", id),
-                            &download.progress,
-                            note,
-                            cx,
-                        ))
-                    })
-                    .when(
-                        download.progress.total == 0 && download.reconnecting,
-                        |card| card.child(muted("Connection lost, reconnecting…", cx)),
-                    )
-                    .child(
-                        row()
-                            .justify_end()
-                            .child(Button::new(("cancel", id)).label("Cancel").on_click(
-                                cx.listener(move |this, _, _, cx| {
-                                    this.dash.update(cx, |d, cx| d.cancel_download(tag, cx))
-                                }),
-                            ))
-                            .children(toggle),
-                    )
-            }
-            DownloadStatus::Done => {
-                let reveal = download.reveal.clone();
-                card(cx)
-                    .child(div().child(format!(
-                        "Received {}",
-                        download.name.as_deref().unwrap_or("files")
-                    )))
-                    .when(download.conflicts > 0, |c| {
-                        c.child(muted(
-                            format!(
-                                "{} renamed to avoid overwriting existing files",
-                                items(download.conflicts)
-                            ),
-                            cx,
-                        ))
-                    })
-                    .child(
-                        row()
-                            .justify_end()
-                            .child(dismiss)
-                            .children(reveal.map(|reveal| {
-                                Button::new(("reveal", id))
-                                    .label("Show in Finder")
-                                    .on_click(move |_, _, cx| cx.reveal_path(&reveal))
-                            })),
-                    )
-            }
-            DownloadStatus::Failed(error) => card(cx)
-                .child(div().child(format!(
-                    "Couldn't receive {}",
-                    download.name.as_deref().unwrap_or("files")
-                )))
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(cx.theme().danger)
-                        .child(error.clone()),
+        let remove = Button::new(("remove", id))
+            .ghost()
+            .xsmall()
+            .icon(IconName::Close)
+            .tooltip("Remove")
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.dash.update(cx, |d, cx| d.remove_download(tag, cx))
+            }));
+        transfer_row(
+            TransferCells {
+                id,
+                icon: IconName::ArrowDown,
+                name: download
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| "Incoming files".into()),
+                peer: from,
+                size: p.total,
+                fraction,
+                status,
+                detail,
+                tone: match download.status {
+                    DownloadStatus::Done => Tone::Done,
+                    DownloadStatus::Failed(_) => Tone::Failed,
+                    DownloadStatus::Paused => Tone::Held,
+                    DownloadStatus::Running if download.reconnecting => Tone::Held,
+                    DownloadStatus::Running => Tone::Active,
+                },
+            },
+            toggle,
+            remove,
+            cx,
+        )
+    }
+
+    /// Asks who the oldest share without a receiver is for. Covers the window
+    /// so nothing else happens until it's answered.
+    fn receiver_picker(&self, cx: &Context<Self>) -> Option<Stateful<Div>> {
+        let dash = self.dash.read(cx);
+        let tag = *dash.choosing.first()?;
+        let share = dash.shares.iter().find(|s| s.tag == tag)?;
+        let devices: Vec<(String, String, &'static str)> = dash
+            .paired
+            .iter()
+            .filter(|d| d.online && d.pairing_status == PairingStatus::Active)
+            .map(|d| (d.endpoint_id.clone(), d.display_name.clone(), "Paired"))
+            .chain(dash.nearby.iter().filter(|d| d.identified).map(|d| {
+                (
+                    d.endpoint_id.clone(),
+                    device_label(d.display_name.as_deref(), &d.endpoint_id),
+                    "Nearby",
                 )
-                .child(
-                    row().justify_end().child(dismiss).child(
-                        Button::new(("retry", id))
-                            .label("Retry")
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.dash.update(cx, |d, cx| d.retry_download(tag, cx))
-                            })),
-                    ),
-                ),
+            }))
+            .collect();
+        let theme = cx.theme();
+        let mut list = v_flex().gap_1();
+        if devices.is_empty() {
+            list = list.child(muted(
+                "No devices online. Pair one in Devices, or send a ticket.",
+                cx,
+            ));
         }
+        for (ix, (endpoint_id, name, kind)) in devices.into_iter().enumerate() {
+            let recipient = Recipient::Device {
+                endpoint_id,
+                name: name.clone(),
+            };
+            list = list.child(
+                Button::new(("receiver", ix))
+                    .ghost()
+                    .w_full()
+                    .justify_start()
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .gap_2()
+                            .child(div().flex_1().text_left().child(name))
+                            .child(muted(kind, cx)),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        let recipient = recipient.clone();
+                        this.dash
+                            .update(cx, |d, cx| d.choose_receiver(tag, recipient, cx))
+                    })),
+            );
+        }
+        let size = share
+            .meta
+            .as_ref()
+            .map(|m| format!(" ({})", format_size(m.size)))
+            .unwrap_or_default();
+        Some(
+            div()
+                .id("receiver-picker")
+                .absolute()
+                .inset_0()
+                .occlude()
+                .bg(hsla(0., 0., 0., 0.55))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    card(cx)
+                        .bg(theme.popover)
+                        .w(px(380.))
+                        .max_w_full()
+                        .child(heading(format!("Send {}{size} to…", share.title)))
+                        .child(list)
+                        .child(
+                            row()
+                                .child(
+                                    h_flex().flex_1().child(
+                                        Button::new("use-ticket")
+                                            .ghost()
+                                            .label("Copy a ticket")
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.dash.update(cx, |d, cx| {
+                                                    d.choose_receiver(tag, Recipient::Ticket, cx)
+                                                })
+                                            })),
+                                    ),
+                                )
+                                .child(Button::new("cancel-send").label("Cancel").on_click(
+                                    cx.listener(move |this, _, _, cx| {
+                                        this.dash.update(cx, |d, cx| d.stop_share(tag, cx))
+                                    }),
+                                )),
+                        ),
+                ),
+        )
     }
 
     fn devices(&mut self, cx: &mut Context<Self>) -> Div {
